@@ -15,15 +15,15 @@ pub(crate) fn export_font_level_cps(
 ) -> Result<(), BabelfontError> {
     export_variable_font_origin(custom_parameters, font)?;
     export_use_typo_metrics(custom_parameters, font)?;
-    export_vertical_metrics(custom_parameters, font)?;
     Ok(())
 }
 
-/// The OS/2 and `hhea` vertical metrics that Glyphs stores as font-level custom
-/// parameters, not as entries in the `metrics` array. fontc (and Glyphs) read
-/// these as custom parameters, so emitting them as metric slots — which the
-/// generic metric export otherwise does — leaves them ignored and the font
-/// falls back to computed bbox defaults (wrong line height).
+/// The OS/2 and `hhea` vertical metrics that Glyphs stores as *master-level*
+/// custom parameters, not as entries in the `metrics` array. fontc (and Glyphs)
+/// read these as custom parameters (master first, then font as a fallback), so
+/// emitting them as metric slots — which the generic metric export otherwise
+/// does — leaves them ignored and the built font falls back to computed bbox
+/// defaults (wrong line height).
 pub(crate) fn is_vertical_metric_cp(metric: &MetricType) -> bool {
     matches!(
         metric,
@@ -38,16 +38,16 @@ pub(crate) fn is_vertical_metric_cp(metric: &MetricType) -> bool {
     )
 }
 
-/// Emit the OS/2 + hhea vertical metrics (parsed into the first master's metric
-/// map, e.g. from a FontForge SFD's `OS2TypoAscent`/`OS2WinAscent`/`HheadAscent`
-/// fields) as font-level custom parameters with values.
-fn export_vertical_metrics(
+/// Emit a master's OS/2 + hhea vertical metrics (parsed into its metric map,
+/// e.g. from a FontForge SFD's `OS2TypoAscent`/`OS2WinAscent`/`HheadAscent`
+/// fields) as *master-level* custom parameters with values.
+///
+/// Parameters already present (typically restored verbatim from the master's
+/// `format_specific` on a Glyphs→Glyphs round-trip) are left untouched.
+pub(crate) fn append_master_vertical_metrics(
     custom_parameters: &mut Vec<CustomParameter>,
-    font: &Font,
-) -> Result<(), BabelfontError> {
-    let Some(master) = font.masters.first() else {
-        return Ok(());
-    };
+    master: &crate::Master,
+) {
     // Fixed order so the emitted .glyphs is reproducible.
     let order = [
         MetricType::TypoAscender,
@@ -61,17 +61,18 @@ fn export_vertical_metrics(
     ];
     for metric in order {
         if let Some(&value) = master.metrics.get(&metric) {
-            find_or_insert(
-                custom_parameters,
-                CustomParameter {
+            if !custom_parameters
+                .iter()
+                .any(|cp| cp.name == metric.as_str())
+            {
+                custom_parameters.push(CustomParameter {
                     name: metric.as_str().to_string(),
                     value: Plist::Integer(value as i64),
                     disabled: false,
-                },
-            );
+                });
+            }
         }
     }
-    Ok(())
 }
 
 fn find_or_insert(cps: &mut Vec<CustomParameter>, cp: CustomParameter) {
@@ -206,35 +207,62 @@ mod tests {
     }
 
     #[test]
-    fn test_export_vertical_metrics_from_master_metrics() {
-        use crate::{Font, Master, MetricType};
+    fn test_export_vertical_metrics_as_master_level_cps() {
+        use crate::{Master, MetricType};
+        use glyphslib::common::CustomParameter;
         use glyphslib::Plist;
 
-        let mut font = Font::default();
-        let mut master = Master::default();
-        for (m, v) in [
-            (MetricType::TypoAscender, 1928),
-            (MetricType::TypoDescender, -412),
-            (MetricType::WinAscent, 1928),
-            (MetricType::WinDescent, 412),
-            (MetricType::HheaAscender, 1928),
-            (MetricType::HheaDescender, -412),
+        // Two masters with different vertical metrics: each master's values
+        // must land on that master, not at the font level.
+        let mut light = Master::default();
+        let mut bold = Master::default();
+        for (m, lv, bv) in [
+            (MetricType::TypoAscender, 1928, 1836),
+            (MetricType::TypoDescender, -412, -724),
+            (MetricType::WinAscent, 1928, 1836),
         ] {
-            master.metrics.insert(m, v);
+            light.metrics.insert(m.clone(), lv);
+            bold.metrics.insert(m, bv);
         }
-        font.masters.push(master);
 
-        let mut cps = vec![];
-        super::export_vertical_metrics(&mut cps, &font).unwrap();
-        let value = |name: &str| cps.iter().find(|c| c.name == name).map(|c| c.value.clone());
-        // OS/2 + hhea metrics are emitted as custom parameters with values.
-        assert_eq!(value("typoAscender"), Some(Plist::Integer(1928)));
-        assert_eq!(value("typoDescender"), Some(Plist::Integer(-412)));
-        assert_eq!(value("winAscent"), Some(Plist::Integer(1928)));
-        assert_eq!(value("winDescent"), Some(Plist::Integer(412)));
-        assert_eq!(value("hheaAscender"), Some(Plist::Integer(1928)));
-        assert_eq!(value("hheaDescender"), Some(Plist::Integer(-412)));
+        let value = |cps: &[CustomParameter], name: &str| {
+            cps.iter().find(|c| c.name == name).map(|c| c.value.clone())
+        };
+
+        let mut light_cps = vec![];
+        super::append_master_vertical_metrics(&mut light_cps, &light);
+        assert_eq!(
+            value(&light_cps, "typoAscender"),
+            Some(Plist::Integer(1928))
+        );
+        assert_eq!(
+            value(&light_cps, "typoDescender"),
+            Some(Plist::Integer(-412))
+        );
+        assert_eq!(value(&light_cps, "winAscent"), Some(Plist::Integer(1928)));
         // A metric that was not set is not emitted.
-        assert!(value("typoLineGap").is_none());
+        assert!(value(&light_cps, "typoLineGap").is_none());
+
+        let mut bold_cps = vec![];
+        super::append_master_vertical_metrics(&mut bold_cps, &bold);
+        assert_eq!(value(&bold_cps, "typoAscender"), Some(Plist::Integer(1836)));
+        assert_eq!(
+            value(&bold_cps, "typoDescender"),
+            Some(Plist::Integer(-724))
+        );
+
+        // A parameter already present (e.g. restored verbatim from a
+        // Glyphs->Glyphs round-trip) is left untouched.
+        let mut preexisting = vec![CustomParameter {
+            name: "typoAscender".to_string(),
+            value: Plist::Integer(999),
+            disabled: false,
+        }];
+        super::append_master_vertical_metrics(&mut preexisting, &light);
+        assert_eq!(
+            value(&preexisting, "typoAscender"),
+            Some(Plist::Integer(999))
+        );
+        assert_eq!(value(&preexisting, "winAscent"), Some(Plist::Integer(1928)));
     }
 }

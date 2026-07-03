@@ -1177,6 +1177,10 @@ fn save_master(master: &Master, axes: &[Axis], metrics: &[crate::MetricType]) ->
         });
     }
 
+    let mut custom_parameters = serialize_custom_parameters(&master.format_specific);
+    // OS/2 + hhea vertical metrics live in master-level custom parameters.
+    customparameters::append_master_vertical_metrics(&mut custom_parameters, master);
+
     glyphs3::Master {
         id: master.id.clone(),
         name: master
@@ -1187,7 +1191,7 @@ fn save_master(master: &Master, axes: &[Axis], metrics: &[crate::MetricType]) ->
         axes_values,
         guides: master.guides.iter().map(Into::into).collect(),
         metric_values,
-        custom_parameters: serialize_custom_parameters(&master.format_specific),
+        custom_parameters,
         stem_values: master
             .format_specific
             .get_parse_or::<Vec<f32>>(KEY_STEM_VALUES, Vec::new()),

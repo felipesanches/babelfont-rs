@@ -2860,6 +2860,25 @@ impl SfdParser {
             .iter_mut()
             .chain(self.gpos_lookups.0.iter_mut())
         {
+            // Anchor-based GPOS mark/cursive lookups (mark-to-base,
+            // mark-to-mark, mark-to-ligature, cursive) carry no FEA rules in
+            // FontForge: their attachment data lives entirely in the glyph
+            // AnchorClass/AnchorPoint entries (now converted to Glyphs anchors).
+            // Emitting them here would produce EMPTY `feature abvm/blwm/mark/...`
+            // blocks in the exported source, and fontc skips auto-generating any
+            // feature that is already declared in the FEA (without an insertion
+            // marker) — which would suppress the anchor-driven mark features
+            // entirely. Skip them so fontc rebuilds abvm/blwm/mark/mkmk/curs
+            // from the anchors.
+            if matches!(
+                lookup.lookup_type,
+                layout::LookupType::MarkToBasePosition
+                    | layout::LookupType::MarkToMarkPosition
+                    | layout::LookupType::MarkToLigaturePosition
+                    | layout::LookupType::CursivePosition
+            ) {
+                continue;
+            }
             // Populate the block with code from the subtables
             lookup.block.statements.extend(
                 lookup
@@ -4745,6 +4764,17 @@ mod tests {
                 .and_then(|v| v.as_str()),
             Some("Ligature"),
             "ligature glyph must carry Ligature subCategory"
+        );
+
+        // Anchor-based mark GPOS lookups must NOT be emitted as (empty) feature
+        // blocks, otherwise fontc would skip generating abvm/blwm from anchors.
+        assert!(
+            !font
+                .features
+                .features
+                .iter()
+                .any(|(tag, _)| tag == "abvm" || tag == "blwm"),
+            "empty anchor-based mark features must not be exported"
         );
     }
     #[test]

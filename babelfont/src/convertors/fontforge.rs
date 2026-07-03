@@ -794,6 +794,7 @@ impl SfdParser {
         // anchor Y coordinate) and rewrite the anchor names accordingly.
         self.classify_anchor_classes();
         self.rename_anchors();
+        self.infer_mark_categories_from_anchors();
 
         Ok(())
     }
@@ -2681,6 +2682,48 @@ impl SfdParser {
                         base_name.clone()
                     };
                 }
+            }
+        }
+    }
+
+    /// Classify GlyphClass-less glyphs that carry only mark-side anchors as
+    /// Nonspacing marks.
+    ///
+    /// SFD records a glyph's role in two ways: the coarse `GlyphClass` line and,
+    /// per anchor, the attachment `kind` (`mark` = the glyph attaches AS a mark,
+    /// `basechar`/`baselig`/... = base side). Some sources (e.g. Glegoo Bold)
+    /// omit `GlyphClass` on conjunct marks, leaving their category Unknown. Such
+    /// a glyph then exports without a category, and fontc — seeing an
+    /// underscore-joined name — treats it as a ligature and drops it from the
+    /// abvm/blwm mark coverage. The anchor `kind` is the authoritative signal:
+    /// a glyph whose anchors are exclusively mark-side is a mark, so mirror the
+    /// `GlyphClass: 4` path (category = Mark, subCategory = Nonspacing).
+    fn infer_mark_categories_from_anchors(&mut self) {
+        for glyph in self.font.glyphs.0.iter_mut() {
+            if glyph.category != GlyphCategory::Unknown {
+                continue;
+            }
+            let mut has_mark_anchor = false;
+            let mut has_base_anchor = false;
+            for layer in glyph.layers.iter() {
+                for anchor in layer.anchors.iter() {
+                    match anchor
+                        .format_specific
+                        .get("sfd.kind")
+                        .and_then(|v| v.as_str())
+                    {
+                        Some("mark") => has_mark_anchor = true,
+                        Some(_) => has_base_anchor = true,
+                        None => {}
+                    }
+                }
+            }
+            if has_mark_anchor && !has_base_anchor {
+                glyph.category = GlyphCategory::Mark;
+                glyph.format_specific.insert(
+                    "subcategory".to_string(),
+                    serde_json::Value::String("Nonspacing".to_string()),
+                );
             }
         }
     }
@@ -4703,5 +4746,45 @@ mod tests {
             Some("Ligature"),
             "ligature glyph must carry Ligature subCategory"
         );
+    }
+    #[test]
+    fn test_mark_category_inferred_from_anchor_kind() {
+        // Some SFDs (e.g. Glegoo Bold) have no GlyphClass lines at all. A glyph
+        // whose anchors are exclusively mark-side ("mark" kind) must still be
+        // classified as a Nonspacing mark, or fontc drops it from the abvm/blwm
+        // mark coverage.
+        let data = concat!(
+            "SplineFontDB: 3.0\n",
+            "Lookup: 260 0 0 \"abvm mark\" {\"abvm-1\"} [ 'abvm' ('deva' <'dflt' > ) ]\n",
+            "AnchorClass2: \"Above\" \"'abvm' Above Base Mark lookup 1 subtable\"\n",
+            "BeginChars: 2 2\n",
+            "StartChar: ka\n",
+            "Encoding: 0 -1 0\n",
+            "Width: 600\n",
+            "AnchorPoint: \"Above\" 300 700 basechar 0\n",
+            "Fore\n",
+            "EndChar\n",
+            "StartChar: anusvara\n",
+            "Encoding: 1 -1 1\n",
+            "Width: 0\n",
+            "AnchorPoint: \"Above\" 0 500 mark 0\n",
+            "Fore\n",
+            "EndChar\n",
+            "EndChars\n",
+            "EndSplineFont\n"
+        );
+        let font = load_str(data).expect("Failed to parse GlyphClass-less SFD");
+        let mark = font.glyphs.get("anusvara").expect("missing 'anusvara'");
+        assert_eq!(mark.category, GlyphCategory::Mark);
+        assert_eq!(
+            mark.format_specific
+                .get("subcategory")
+                .and_then(|v| v.as_str()),
+            Some("Nonspacing"),
+            "GlyphClass-less mark must be inferred as Nonspacing"
+        );
+        // The base glyph keeps its Unknown category (it has a base-side anchor).
+        let ka = font.glyphs.get("ka").expect("missing 'ka'");
+        assert_eq!(ka.category, GlyphCategory::Unknown);
     }
 }

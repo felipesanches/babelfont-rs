@@ -1032,6 +1032,33 @@ impl SfdParser {
                             4 => GlyphCategory::Mark,
                             _ => GlyphCategory::Unknown,
                         };
+                        // fontc classifies a glyph as a GDEF mark only when both
+                        // category == Mark and subCategory is Nonspacing (or
+                        // SpacingCombining). SFD only records the coarse
+                        // GlyphClass, so emit an explicit Nonspacing subCategory
+                        // for marks; without it no mark2base lookups (and thus no
+                        // abvm/blwm) are generated.
+                        //
+                        // Ligatures need subCategory = Ligature so fontc assigns
+                        // them GDEF class 2; otherwise the bare "Ligature"
+                        // category is unknown to fontc and its bundled GlyphData
+                        // may reclassify some conjuncts as marks, dropping them
+                        // from mark2base base coverage.
+                        match v {
+                            3 => {
+                                glyph.format_specific.insert(
+                                    "subcategory".to_string(),
+                                    serde_json::Value::String("Ligature".to_string()),
+                                );
+                            }
+                            4 => {
+                                glyph.format_specific.insert(
+                                    "subcategory".to_string(),
+                                    serde_json::Value::String("Nonspacing".to_string()),
+                                );
+                            }
+                            _ => {}
+                        }
                     }
                 }
                 "Back" | "Fore" | "Layer" => {
@@ -4591,12 +4618,13 @@ mod tests {
     }
 
     #[test]
-    fn test_anchors_before_fore_markers() {
+    fn test_indic_mark_anchors_and_subcategory() {
         // AnchorPoint lines appear before the "Fore" marker in SFD and use
         // FontForge anchor-class names. The convertor must (a) keep the anchors
         // by attaching them to the foreground layer, (b) translate the class
         // names into the Glyphs top/bottom (base) and _top/_bottom (mark)
-        // convention using the AnchorClass2 above/below classification.
+        // convention using the AnchorClass2 above/below classification, and
+        // (c) mark GlyphClass-4 glyphs as Nonspacing marks.
         let data = concat!(
             "SplineFontDB: 3.0\n",
             // Two mark-to-base (kind 0x104 = 260) GPOS lookups, one per feature.
@@ -4643,14 +4671,37 @@ mod tests {
         ka_names.sort();
         assert_eq!(ka_names, vec!["bottom", "top"], "base anchor names");
 
-        // Mark glyph: anchor renamed to "_top".
+        // Mark glyph: category Mark + subCategory Nonspacing, anchor "_top".
         let mark = font
             .glyphs
             .get("anusvara")
             .expect("missing mark glyph 'anusvara'");
+        assert_eq!(mark.category, GlyphCategory::Mark);
+        assert_eq!(
+            mark.format_specific
+                .get("subcategory")
+                .and_then(|v| v.as_str()),
+            Some("Nonspacing"),
+            "mark glyph must carry Nonspacing subCategory"
+        );
         let mark_layer =
             glyph_foreground_layer(mark, &default_master_id).expect("mark foreground layer");
         let mark_names: Vec<&str> = mark_layer.anchors.iter().map(|a| a.name.as_str()).collect();
         assert_eq!(mark_names, vec!["_top"], "mark anchor name");
+
+        // Ligature glyph (GlyphClass 3): category Ligature + subCategory
+        // Ligature, so the exported category becomes a valid Glyphs "Letter".
+        let lig = font
+            .glyphs
+            .get("k_ka")
+            .expect("missing ligature glyph 'k_ka'");
+        assert_eq!(lig.category, GlyphCategory::Ligature);
+        assert_eq!(
+            lig.format_specific
+                .get("subcategory")
+                .and_then(|v| v.as_str()),
+            Some("Ligature"),
+            "ligature glyph must carry Ligature subCategory"
+        );
     }
 }

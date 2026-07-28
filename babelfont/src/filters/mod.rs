@@ -132,6 +132,7 @@ declare_filters! {
     }
     group "Filters for manipulating feature code" {
         ResolveIncludes(resolveincludes) => "resolveincludes",
+        LegacyDuplicateCmap(legacyduplicatecmap) => "legacyduplicatecmap",
         SubsetLayout(subsetlayout) => "subsetlayout",
         MoveKerningFromFeatures(movekerningfromfeatures) => "movekerningfromfeatures",
     }

@@ -1,0 +1,286 @@
+use crate::filters::FontFilter;
+
+/// A filter that restores the duplicate cmap entries makeotf used to add.
+///
+/// makeotf mapped a small fixed set of codepoints onto glyphs that already
+/// carried a different one -- U+00A0 onto `space`, U+00AD onto `hyphen`, and so
+/// on. The glyph is the same; only the extra mapping is missing. FontForge does
+/// the same thing at export time for the no-break space.
+///
+/// A convertor that reads only what the source file states drops those, and the
+/// characters render as `.notdef` even though the right glyph is present. U+00A0
+/// is the one that matters in practice: it appears in ordinary web text, and a
+/// font without it breaks a space that was meant to be unbreakable.
+///
+/// This is not speculative. In one corpus of Google Fonts families converted
+/// from FontForge sources, 61 of 107 needed U+00A0 added by hand after
+/// conversion to reproduce what the shipped binary had; in a second corpus
+/// converted from FontLab sources, 5 families lose it and 2 more lose
+/// U+00AD/U+2219.
+///
+/// Deliberately conservative on both sides:
+///
+///   * the codepoint is only added when it is **not already mapped** anywhere in
+///     the font, so a source that assigns it deliberately always wins;
+///   * the target glyph must **already exist**, so nothing is invented.
+#[derive(Default)]
+pub struct LegacyDuplicateCmap;
+
+impl LegacyDuplicateCmap {
+    /// Create a new LegacyDuplicateCmap filter
+    pub fn new() -> Self {
+        LegacyDuplicateCmap
+    }
+}
+
+/// The duplicate mappings makeotf applied, as (codepoint, target glyph name).
+///
+/// This is the AFDKO set. It is short on purpose: every entry is a case where
+/// the two codepoints are genuinely the same glyph, not merely similar.
+const DUPLICATES: &[(u32, &str)] = &[
+    (0x00A0, "space"),          // no-break space
+    (0x02C9, "macron"),         // modifier letter macron
+    (0x03BC, "mu"),             // greek small letter mu
+    (0x2126, "Omega"),          // ohm sign
+    (0x2206, "Delta"),          // increment
+    (0x2219, "periodcentered"), // bullet operator
+];
+
+// U+00AD SOFT HYPHEN is deliberately NOT here, though makeotf did add it. It is
+// a formatting character rather than a glyph, and font QA rejects encoding it:
+// fontspector's `soft_hyphen` warns on any font that has one. Adding it took 53
+// of 119 families from clean to warning in a measured run, which is why the
+// AFDKO set is not adopted wholesale.
+
+/// Make a separate no-break space glyph as wide as the space glyph.
+///
+/// Where a source carries its own U+00A0 glyph rather than relying on the
+/// duplicate mapping, its advance is often not the space's -- FontForge
+/// synthesised the glyph at export and gave it the right width, so the source
+/// never had to be correct. Left alone, the built font has a no-break space
+/// that is a different width from its space, which font QA rejects
+/// (`whitespace_widths`) and which is visibly wrong when the two are mixed.
+///
+/// This is the other half of what makeotf-era sources needed by hand: of 107
+/// families modernized from FontForge sources, the per-repo notes record the
+/// no-break space advance being corrected to match the space in a large share
+/// of them. Doing it here means a reconversion no longer loses that work.
+///
+/// Only the width is touched, and only when both glyphs exist and disagree.
+fn normalise_nbsp_width(font: &mut crate::Font) {
+    let space_widths: Vec<f32> = font
+        .glyphs
+        .iter()
+        .find(|g| g.codepoints.contains(&0x0020))
+        .map(|g| g.layers.iter().map(|l| l.width).collect())
+        .unwrap_or_default();
+    if space_widths.is_empty() {
+        return;
+    }
+
+    let Some(nbsp) = font
+        .glyphs
+        .iter_mut()
+        .find(|g| g.codepoints.contains(&0x00A0) && !g.codepoints.contains(&0x0020))
+    else {
+        // Either there is no separate no-break space, or it is the space glyph
+        // itself carrying both codepoints -- in which case there is nothing to
+        // reconcile.
+        return;
+    };
+
+    for (layer, width) in nbsp.layers.iter_mut().zip(space_widths.iter()) {
+        if (layer.width - width).abs() > f32::EPSILON {
+            log::info!(
+                "Setting the no-break space advance to the space's ({} -> {width})",
+                layer.width
+            );
+            layer.width = *width;
+        }
+    }
+}
+
+impl FontFilter for LegacyDuplicateCmap {
+    fn apply(&self, font: &mut crate::Font) -> Result<(), crate::BabelfontError> {
+        let already_mapped: std::collections::HashSet<u32> = font
+            .glyphs
+            .iter()
+            .flat_map(|g| g.codepoints.iter().copied())
+            .collect();
+
+        for (codepoint, target) in DUPLICATES {
+            if already_mapped.contains(codepoint) {
+                continue;
+            }
+            if let Some(glyph) = font.glyphs.iter_mut().find(|g| g.name == *target) {
+                glyph.codepoints.push(*codepoint);
+                log::info!("Added the legacy duplicate mapping U+{codepoint:04X} -> {target}");
+            }
+        }
+
+        normalise_nbsp_width(font);
+        Ok(())
+    }
+
+    fn from_str(_s: &str) -> Result<Self, crate::BabelfontError>
+    where
+        Self: Sized,
+    {
+        Ok(LegacyDuplicateCmap::new())
+    }
+
+    #[cfg(feature = "cli")]
+    fn arg() -> clap::Arg
+    where
+        Self: Sized,
+    {
+        clap::Arg::new("legacyduplicatecmap")
+            .long("add-legacy-duplicate-cmap")
+            .help(
+                "Add the duplicate cmap entries makeotf used to synthesise \
+                 (U+00A0 -> space, U+00AD -> hyphen, ...)",
+            )
+            .action(clap::ArgAction::SetTrue)
+    }
+}
+
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Font, Glyph};
+
+    fn glyph(name: &str, codepoints: Vec<u32>) -> Glyph {
+        Glyph {
+            name: name.into(),
+            codepoints,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_duplicate_is_added_when_the_glyph_exists() {
+        let mut font = Font::new();
+        font.glyphs.push(glyph("space", vec![0x0020]));
+        LegacyDuplicateCmap::new().apply(&mut font).unwrap();
+
+        let space = font.glyphs.iter().find(|g| g.name == "space").unwrap();
+        assert!(space.codepoints.contains(&0x0020), "original kept");
+        assert!(space.codepoints.contains(&0x00A0), "duplicate added");
+    }
+
+    #[test]
+    fn nothing_is_invented_when_the_glyph_is_absent() {
+        let mut font = Font::new();
+        font.glyphs.push(glyph("A", vec![0x0041]));
+        LegacyDuplicateCmap::new().apply(&mut font).unwrap();
+
+        assert_eq!(font.glyphs.len(), 1, "no glyph created");
+        let a = font.glyphs.iter().find(|g| g.name == "A").unwrap();
+        assert_eq!(a.codepoints, vec![0x0041], "unrelated glyph untouched");
+    }
+
+    #[test]
+    fn a_codepoint_the_source_already_assigns_is_left_alone() {
+        // The source deliberately gives U+00A0 its own glyph. Adding it to
+        // `space` as well would map one codepoint to two glyphs.
+        let mut font = Font::new();
+        font.glyphs.push(glyph("space", vec![0x0020]));
+        font.glyphs.push(glyph("uni00A0", vec![0x00A0]));
+        LegacyDuplicateCmap::new().apply(&mut font).unwrap();
+
+        let space = font.glyphs.iter().find(|g| g.name == "space").unwrap();
+        assert_eq!(space.codepoints, vec![0x0020], "space not given U+00A0");
+        let nbsp = font.glyphs.iter().find(|g| g.name == "uni00A0").unwrap();
+        assert_eq!(nbsp.codepoints, vec![0x00A0]);
+    }
+
+    fn glyph_with_width(name: &str, codepoints: Vec<u32>, width: f32) -> Glyph {
+        let mut g = glyph(name, codepoints);
+        g.layers.push(crate::Layer::new(width));
+        g
+    }
+
+    #[test]
+    fn a_separate_nbsp_is_widened_to_match_the_space() {
+        // FontForge synthesised the no-break space at export and gave it the
+        // right width, so sources that carry their own often have it wrong.
+        let mut font = Font::new();
+        font.glyphs.push(glyph_with_width("space", vec![0x0020], 616.0));
+        font.glyphs
+            .push(glyph_with_width("uni00A0", vec![0x00A0], 720.0));
+        LegacyDuplicateCmap::new().apply(&mut font).unwrap();
+
+        let nbsp = font.glyphs.iter().find(|g| g.name == "uni00A0").unwrap();
+        assert_eq!(nbsp.layers[0].width, 616.0, "nbsp should match the space");
+        let space = font.glyphs.iter().find(|g| g.name == "space").unwrap();
+        assert_eq!(space.layers[0].width, 616.0, "space must not move");
+    }
+
+    #[test]
+    fn the_width_is_left_alone_when_there_is_nothing_to_reconcile() {
+        // U+00A0 on the space glyph itself: one glyph, one width, nothing to do.
+        let mut font = Font::new();
+        font.glyphs
+            .push(glyph_with_width("space", vec![0x0020, 0x00A0], 616.0));
+        LegacyDuplicateCmap::new().apply(&mut font).unwrap();
+        let space = font.glyphs.iter().find(|g| g.name == "space").unwrap();
+        assert_eq!(space.layers[0].width, 616.0);
+
+        // No space glyph at all: nothing to copy from.
+        let mut font2 = Font::new();
+        font2
+            .glyphs
+            .push(glyph_with_width("uni00A0", vec![0x00A0], 720.0));
+        LegacyDuplicateCmap::new().apply(&mut font2).unwrap();
+        let nbsp = font2.glyphs.iter().find(|g| g.name == "uni00A0").unwrap();
+        assert_eq!(nbsp.layers[0].width, 720.0, "unchanged with no reference");
+    }
+
+    #[test]
+    fn the_soft_hyphen_is_never_added() {
+        // U+00AD is a formatting character, not a glyph. Font QA warns on any
+        // font that encodes one, and adding it regressed 53 of 119 families in
+        // a measured run -- so it stays out of the table even though makeotf
+        // used to add it.
+        let mut font = Font::new();
+        font.glyphs.push(glyph("hyphen", vec![0x002D]));
+        LegacyDuplicateCmap::new().apply(&mut font).unwrap();
+
+        let hyphen = font.glyphs.iter().find(|g| g.name == "hyphen").unwrap();
+        assert_eq!(hyphen.codepoints, vec![0x002D], "U+00AD must not be added");
+        assert!(!DUPLICATES.iter().any(|(cp, _)| *cp == 0x00AD));
+    }
+
+    #[test]
+    fn every_duplicate_in_the_table_is_applied() {
+        let mut font = Font::new();
+        for (_, target) in DUPLICATES {
+            font.glyphs.push(glyph(target, vec![]));
+        }
+        LegacyDuplicateCmap::new().apply(&mut font).unwrap();
+
+        for (codepoint, target) in DUPLICATES {
+            let g = font.glyphs.iter().find(|g| g.name == *target).unwrap();
+            assert!(
+                g.codepoints.contains(codepoint),
+                "U+{codepoint:04X} was not added to {target}"
+            );
+        }
+    }
+
+    #[test]
+    fn running_it_twice_does_not_duplicate_the_codepoint() {
+        let mut font = Font::new();
+        font.glyphs.push(glyph("space", vec![0x0020]));
+        LegacyDuplicateCmap::new().apply(&mut font).unwrap();
+        LegacyDuplicateCmap::new().apply(&mut font).unwrap();
+
+        let space = font.glyphs.iter().find(|g| g.name == "space").unwrap();
+        assert_eq!(
+            space.codepoints.iter().filter(|c| **c == 0x00A0).count(),
+            1,
+            "U+00A0 added twice"
+        );
+    }
+}

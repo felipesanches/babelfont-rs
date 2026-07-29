@@ -482,6 +482,65 @@ fn load_properties(
     }
 }
 
+/// Carry `usWeightClass` and `usWidthClass` across as FEA, the only route a
+/// static Glyphs source has to them.
+///
+/// A Glyphs file has no font-level weight class. A compiler takes the value
+/// from the `wght` axis default, and a single-master static font has no axis
+/// to take it from -- so a source that plainly states `TTFWeight: 700` builds
+/// a font declaring 400, and QA reports the bold as having a Regular weight.
+///
+/// Neither an `instances` entry carrying `weightClass` nor a point `wght` axis
+/// fixes it; both were measured. The axis collapses because a single master
+/// gives it no range, and the instance's weight class is only ever consulted
+/// to build that axis mapping. `table OS/2 { WeightClass ...; }` is applied
+/// directly and does work.
+///
+/// A source that already declares its own `table OS/2` block keeps it -- that
+/// is a deliberate statement, and two of them would not compile.
+fn os2_classes_prefix(
+    font: &Font,
+    existing: &[glyphslib::common::FeaturePrefix],
+) -> Option<glyphslib::common::FeaturePrefix> {
+    let ot = &font.custom_ot_values;
+    let weight = ot.os2_us_weight_class;
+    let width = ot.os2_us_width_class;
+    if weight.is_none() && width.is_none() {
+        return None;
+    }
+
+    let declares_os2 = |code: &str| {
+        code.split("table ")
+            .skip(1)
+            .any(|rest| rest.trim_start().starts_with("OS/2"))
+    };
+    if existing.iter().any(|p| declares_os2(&p.code))
+        || font
+            .features
+            .features
+            .iter()
+            .any(|(_, code)| declares_os2(&code.code))
+    {
+        return None;
+    }
+
+    let mut body = String::new();
+    if let Some(weight) = weight {
+        body.push_str(&format!("WeightClass {weight};\n"));
+    }
+    if let Some(width) = width {
+        body.push_str(&format!("WidthClass {width};\n"));
+    }
+
+    Some(glyphslib::common::FeaturePrefix {
+        code: format!("table OS/2 {{\n{body}}} OS/2;"),
+        automatic: false,
+        disabled: false,
+        notes: None,
+        name: "OS/2".to_string(),
+    })
+}
+
 fn save_properties(names: &Names, custom_ot_values: &CustomOTValues) -> Vec<glyphs3::Property> {
     let mut properties: Vec<glyphs3::Property> = vec![];
 
@@ -1003,12 +1062,15 @@ pub(crate) fn as_glyphs3(font: &Font) -> Result<glyphs3::Glyphs3, BabelfontError
         .iter()
         .map(|(name, members)| members.to_featureclass(name))
         .collect();
-    let feature_prefixes = font
+    let mut feature_prefixes: Vec<glyphslib::common::FeaturePrefix> = font
         .features
         .prefixes
         .iter()
         .map(|(name, code)| code.to_featureprefix(name))
         .collect();
+    if let Some(prefix) = os2_classes_prefix(&font, &feature_prefixes) {
+        feature_prefixes.push(prefix);
+    }
     let features = font
         .features
         .features
@@ -1252,6 +1314,62 @@ mod tests {
     use similar::TextDiff;
 
     use super::*;
+
+    fn prefix(code: &str) -> glyphslib::common::FeaturePrefix {
+        glyphslib::common::FeaturePrefix {
+            code: code.to_string(),
+            automatic: false,
+            disabled: false,
+            notes: None,
+            name: "test".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_os2_classes_prefix() {
+        let mut font = Font::new();
+
+        // Nothing stated, nothing emitted.
+        assert!(os2_classes_prefix(&font, &[]).is_none());
+
+        // The case this exists for.
+        font.custom_ot_values.os2_us_weight_class = Some(700);
+        let got = os2_classes_prefix(&font, &[]).unwrap();
+        assert_eq!(got.code, "table OS/2 {\nWeightClass 700;\n} OS/2;");
+        assert_eq!(got.name, "OS/2");
+
+        // Both classes, in a stable order.
+        font.custom_ot_values.os2_us_width_class = Some(3);
+        let got = os2_classes_prefix(&font, &[]).unwrap();
+        assert_eq!(
+            got.code,
+            "table OS/2 {\nWeightClass 700;\nWidthClass 3;\n} OS/2;"
+        );
+
+        // Width alone is enough to emit.
+        font.custom_ot_values.os2_us_weight_class = None;
+        let got = os2_classes_prefix(&font, &[]).unwrap();
+        assert_eq!(got.code, "table OS/2 {\nWidthClass 3;\n} OS/2;");
+
+        // A source that states its own OS/2 block keeps it; two would not
+        // compile.
+        font.custom_ot_values.os2_us_weight_class = Some(700);
+        assert!(
+            os2_classes_prefix(&font, &[prefix("table OS/2 {\nWeightClass 300;\n} OS/2;")])
+                .is_none()
+        );
+        assert!(
+            os2_classes_prefix(&font, &[prefix("  table   OS/2 { FSType 0; } OS/2;")]).is_none()
+        );
+
+        // A different table, or the name appearing in a comment, is not a
+        // declaration and must not suppress ours.
+        assert!(
+            os2_classes_prefix(&font, &[prefix("table head { FontRevision 1.0; } head;")])
+                .is_some()
+        );
+        assert!(os2_classes_prefix(&font, &[prefix("# see the OS/2 table")]).is_some());
+    }
 
     #[test]
     fn test_transform() {

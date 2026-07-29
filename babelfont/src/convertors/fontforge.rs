@@ -159,6 +159,27 @@ fn is_single_or_alternate_sub(line: &str) -> bool {
     one_glyph(from) && one_glyph(to)
 }
 
+/// Write a run-together italic style the way the Glyphs convention spells it.
+///
+/// A PostScript name concatenates the style ("Almendra-BoldItalic"), but a
+/// style name is expected to separate the slope from the weight ("Bold
+/// Italic"). Left run together it is not recognised as one of the four
+/// standard styles, and the family name absorbs it: the built font declares
+/// family "Almendra BoldItalic" / subfamily "Italic" where the shipped binary
+/// says "Almendra" / "Bold Italic".
+///
+/// Only the slope is separated. Weight names stay as they are -- "SemiBold" is
+/// spelled without a space by the same convention, so a general split on
+/// capitals would be wrong.
+fn space_before_italic(style: &str) -> String {
+    match style.strip_suffix("Italic") {
+        Some(prefix) if !prefix.is_empty() && !prefix.ends_with(' ') => {
+            format!("{prefix} Italic")
+        }
+        _ => style.to_string(),
+    }
+}
+
 impl SfdParser {
     fn new(path: PathBuf) -> Self {
         Self {
@@ -904,7 +925,8 @@ impl SfdParser {
             .get_default()
             .or_else(|| self.font.names.family_name.get_default())
             .and_then(|n| n.split_once('-').map(|(_, style)| style.to_string()))
-            .filter(|style| !style.is_empty());
+            .filter(|style| !style.is_empty())
+            .map(|style| space_before_italic(&style));
 
         // Set master name based on width/weight
         if let Some(master) = self.font.masters.get_mut(0) {
@@ -4966,6 +4988,28 @@ mod tests {
         let a = load_str(sfd).expect("load");
         let b = load_str(sfd).expect("load");
         assert_eq!(a.masters[0].id, b.masters[0].id, "master id must be stable");
+    }
+
+    #[test]
+    fn test_space_before_italic() {
+        // The case this exists for: a run-together compound style.
+        assert_eq!(space_before_italic("BoldItalic"), "Bold Italic");
+        assert_eq!(space_before_italic("LightItalic"), "Light Italic");
+
+        // A bare slope has no weight to separate it from.
+        assert_eq!(space_before_italic("Italic"), "Italic");
+
+        // Already spelled correctly -- must not gain a second space.
+        assert_eq!(space_before_italic("Bold Italic"), "Bold Italic");
+
+        // Weight names are spelled without a space by the same convention, so
+        // nothing that is not a slope gets split.
+        assert_eq!(space_before_italic("SemiBold"), "SemiBold");
+        assert_eq!(space_before_italic("Regular"), "Regular");
+        assert_eq!(space_before_italic("Bold"), "Bold");
+
+        // "Italic" inside a word is not a suffix and is left alone.
+        assert_eq!(space_before_italic("Italiano"), "Italiano");
     }
 
     #[rstest]

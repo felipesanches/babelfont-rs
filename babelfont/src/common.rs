@@ -16,6 +16,16 @@ use crate::BabelfontError;
 pub use formatspecific::FormatSpecific;
 pub use otvalue::CustomOTValues;
 
+/// Does this string look like a copyright notice rather than prose?
+///
+/// FontLab Studio 5 had a long-standing bug that copied the copyright notice
+/// into the description field, and sources built with it still carry it.
+pub(crate) fn is_copyright_notice(notice: &str) -> bool {
+    let trimmed = notice.trim_start();
+    let lowered = trimmed.to_lowercase();
+    lowered.starts_with("copyright") || trimmed.starts_with('\u{a9}') || lowered.starts_with("(c)")
+}
+
 pub(crate) fn tag_from_string(s: &str) -> Result<Tag, BabelfontError> {
     if s.len() > 4 {
         return Err(BabelfontError::General(format!(
@@ -120,5 +130,34 @@ impl FromStr for Direction {
                 s
             ))),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_copyright_notice() {
+        // The forms actually seen in the affected sources.
+        assert!(is_copyright_notice(
+            "Copyright (c) 2011 by Gesine Todt. All rights reserved."
+        ));
+        assert!(is_copyright_notice("copyright 2012 vernon adams"));
+        assert!(is_copyright_notice("(c) 2011 Kimberly Geswein"));
+        assert!(is_copyright_notice("\u{a9} 2011 Kimberly Geswein"));
+
+        // Leading whitespace must not hide it.
+        assert!(is_copyright_notice("   Copyright 2011"));
+
+        // Real prose in a description field is left alone, including text that
+        // merely mentions copyright rather than being a notice.
+        assert!(!is_copyright_notice(
+            "A display face for headlines and posters."
+        ));
+        assert!(!is_copyright_notice(
+            "This font is in the public domain; no copyright is claimed."
+        ));
+        assert!(!is_copyright_notice(""));
     }
 }

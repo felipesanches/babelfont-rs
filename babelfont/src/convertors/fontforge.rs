@@ -885,9 +885,32 @@ impl SfdParser {
             self.parse_chars(&chars, &master_id)?;
         }
 
+        // Prefer the style the PostScript name states, when it states one.
+        //
+        // Deriving the master name from the weight class alone loses the slope:
+        // an SFD whose FontName is "CreteRound-Italic" has Weight "Book", so the
+        // weight-derived name is "Regular" and the built italic declares
+        // subfamily Regular. Font QA rejects that -- "Name ID 2 does not conform
+        // to specs. Only R/I/B/BI are allowed, found Regular".
+        //
+        // ItalicAngle is not a usable signal here: of five italic families in a
+        // Google Fonts corpus, four declare ItalicAngle 0. Nor is OS2StyleMap or
+        // MacStyle, which those files leave empty. The PostScript name is the
+        // only field that distinguishes the italic from its regular sibling.
+        let style_from_font_name = self
+            .font
+            .names
+            .postscript_name
+            .get_default()
+            .or_else(|| self.font.names.family_name.get_default())
+            .and_then(|n| n.split_once('-').map(|(_, style)| style.to_string()))
+            .filter(|style| !style.is_empty());
+
         // Set master name based on width/weight
         if let Some(master) = self.font.masters.get_mut(0) {
-            if let Some(weight) = self.font.custom_ot_values.os2_us_weight_class {
+            if let Some(style) = style_from_font_name {
+                master.name = style.into();
+            } else if let Some(weight) = self.font.custom_ot_values.os2_us_weight_class {
                 let weight_name = crate::constants::OS2_WEIGHT_TO_NAME_MAP
                     .iter()
                     .find(|(w, _)| *w == weight)

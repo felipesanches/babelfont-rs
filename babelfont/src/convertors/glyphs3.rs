@@ -485,13 +485,20 @@ fn load_properties(
 fn save_properties(names: &Names, custom_ot_values: &CustomOTValues) -> Vec<glyphs3::Property> {
     let mut properties: Vec<glyphs3::Property> = vec![];
 
+    // Every property written here becomes a `name` record, and a name record is
+    // single-line. Sources carry hard line breaks in the license description --
+    // an SFD encodes them in its `LangName` line -- so flatten on the way out
+    // rather than on the way in, which would cost the source convertors their
+    // exact round-trip.
+    use crate::common::single_line;
+
     // Macro for singular-only properties (no localized variant)
     macro_rules! push_singular {
         ($field:expr, $key:expr) => {
             if let Some(value) = $field.get_default() {
                 properties.push(glyphs3::Property::SingularProperty {
                     key: $key,
-                    value: value.clone(),
+                    value: single_line(value),
                 });
             }
         };
@@ -506,7 +513,7 @@ fn save_properties(names: &Names, custom_ot_values: &CustomOTValues) -> Vec<glyp
                     .iter()
                     .map(|(language, value)| glyphslib::glyphs3::LocalizedValue {
                         language: language.clone(),
-                        value: value.clone(),
+                        value: single_line(value),
                     })
                     .collect();
                 properties.push(glyphs3::Property::LocalizedProperty { key: $key, values });

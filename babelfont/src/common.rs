@@ -16,6 +16,24 @@ use crate::BabelfontError;
 pub use formatspecific::FormatSpecific;
 pub use otvalue::CustomOTValues;
 
+/// Flatten a string so it can be stored in a `name` record.
+///
+/// Name records are single-line. Sources routinely carry hard line breaks in
+/// the license description and copyright -- an SFD encodes them in the
+/// `LangName` line, FontLab stores them with carriage returns -- and passing
+/// those through produces a font that fails QA and renders the break as a
+/// stray glyph in some tools.
+///
+/// Any run of line breaks, with the whitespace around it, becomes one space.
+pub(crate) fn single_line(value: &str) -> String {
+    value
+        .split(|c| c == '\r' || c == '\n')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 pub(crate) fn tag_from_string(s: &str) -> Result<Tag, BabelfontError> {
     if s.len() > 4 {
         return Err(BabelfontError::General(format!(
@@ -120,5 +138,42 @@ impl FromStr for Direction {
                 s
             ))),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_single_line() {
+        // The case this exists for: an OFL description with hard breaks. An
+        // SFD encodes these as carriage returns in its LangName line.
+        assert_eq!(
+            single_line(
+                "This Font Software is licensed under the SIL Open Font License,\rVersion 1.1."
+            ),
+            "This Font Software is licensed under the SIL Open Font License, Version 1.1."
+        );
+
+        // Every flavour of break, and runs of them, collapse to one space.
+        assert_eq!(single_line("a\nb"), "a b");
+        assert_eq!(single_line("a\r\nb"), "a b");
+        assert_eq!(single_line("a\n\n\nb"), "a b");
+
+        // Whitespace around a break is absorbed rather than doubled up.
+        assert_eq!(single_line("a  \n  b"), "a b");
+
+        // Leading and trailing breaks leave no stray space.
+        assert_eq!(single_line("\na\n"), "a");
+
+        // A string with no break is returned unchanged, including interior
+        // spacing, which is not ours to normalise.
+        assert_eq!(single_line("a  b"), "a  b");
+        assert_eq!(single_line(""), "");
+
+        // Idempotent: flattening an already-flat string changes nothing.
+        let once = single_line("a\nb\nc");
+        assert_eq!(single_line(&once), once);
     }
 }

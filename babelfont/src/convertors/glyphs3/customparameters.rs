@@ -225,12 +225,12 @@ fn fs_type_bits(value: u16) -> Vec<i64> {
 ///
 ///   * `os2_fs_selection` is handled by `export_use_typo_metrics`, which reads
 ///     the one bit that is meaningful to carry across.
-///   * `os2_us_weight_class` is left to the instance/master definitions, which
-///     are the authority for weight in a Glyphs source.
-///   * `os2_us_width_class` likewise: the compiler reads width from the
-///     instance and maps it onto the `wdth` axis, and there is no font-level
-///     custom parameter for it. Writing one only produces
-///     "unknown custom parameter" on every build.
+///   * `os2_us_weight_class` and `os2_us_width_class` have no font-level custom
+///     parameter at all. Writing one only produces "unknown custom parameter"
+///     on every build. The instance definitions are not a usable substitute on
+///     a single-master static font either: the compiler reads them only to
+///     build the `wght`/`wdth` axis mapping, and one master leaves no axis to
+///     map onto. They have to travel as FEA.
 fn export_os2_values(
     custom_parameters: &mut Vec<CustomParameter>,
     font: &Font,

@@ -928,6 +928,31 @@ impl SfdParser {
             .filter(|style| !style.is_empty())
             .map(|style| space_before_italic(&style));
 
+        // A family named after its own weight is one family, not two.
+        //
+        // "Elsie Black" is authored as a family in its own right whose sole
+        // style is Regular: FamilyName is "Elsie Black", FontName is
+        // "ElsieBlack-Regular", and Weight is "Black". Taken at face value the
+        // built font declares usWeightClass 900 with subfamily Regular, which
+        // is internally inconsistent -- QA reads the subfamily and expects 400.
+        //
+        // Splitting the weight off gives family "Elsie" with style "Black",
+        // which is how the same design is modelled in a Glyphs source, and
+        // yields the typographic family and subfamily (name IDs 16 and 17)
+        // that a non-standard style needs.
+        let split_weight_from_family = style_from_font_name
+            .as_deref()
+            .is_none_or(|style| style == "Regular")
+            .then(|| self.weight_suffix_of_family_name())
+            .flatten();
+        let style_from_font_name = match split_weight_from_family {
+            Some((family, weight)) => {
+                self.font.names.family_name = family.into();
+                Some(weight)
+            }
+            None => style_from_font_name,
+        };
+
         // Set master name based on width/weight
         if let Some(master) = self.font.masters.get_mut(0) {
             if let Some(style) = style_from_font_name {
@@ -1785,6 +1810,50 @@ impl SfdParser {
                 name_dict.insert(otl_tag.to_string(), decoded);
             }
         }
+    }
+
+    /// Split a family name that ends in its own weight, as (family, weight).
+    ///
+    /// `None` unless the file states a weight, that weight is a real one
+    /// rather than a synonym for Regular, and the family name ends with it
+    /// with something left over -- so "Elsie Black"/Black splits and
+    /// "Black"/Black does not. The comparison ignores spacing, because the
+    /// family name spaces the weight ("Elsie Swash Caps Black") where the
+    /// PostScript name does not.
+    fn weight_suffix_of_family_name(&self) -> Option<(String, String)> {
+        let weight = self
+            .font
+            .format_specific
+            .get("postscript_weight_name")
+            .and_then(|v| v.as_str())?
+            .trim();
+        if weight.is_empty()
+            || weight.eq_ignore_ascii_case("Book")
+            || weight.eq_ignore_ascii_case("Regular")
+            || weight.eq_ignore_ascii_case("Normal")
+            || weight.eq_ignore_ascii_case("Medium")
+        {
+            return None;
+        }
+        let family = self.font.names.family_name.get_default()?.trim();
+        let unspaced = |s: &str| s.replace(' ', "");
+        // The shortest suffix that spells the weight; whatever precedes it is
+        // the family. Cutting on a character boundary keeps this sound for
+        // non-ASCII family names.
+        let stem = family
+            .char_indices()
+            .map(|(ix, _)| ix)
+            .find(|&ix| {
+                family
+                    .get(ix..)
+                    .is_some_and(|tail| unspaced(tail).eq_ignore_ascii_case(weight))
+            })
+            .and_then(|ix| family.get(..ix))?
+            .trim_end();
+        if stem.is_empty() {
+            return None;
+        }
+        Some((stem.to_string(), weight.to_string()))
     }
 
     fn parse_lookup(&mut self, data: &str) {
@@ -4988,6 +5057,48 @@ mod tests {
         let a = load_str(sfd).expect("load");
         let b = load_str(sfd).expect("load");
         assert_eq!(a.masters[0].id, b.masters[0].id, "master id must be stable");
+    }
+
+    #[test]
+    fn test_weight_suffix_of_family_name() {
+        let split = |family: &str, weight: &str| {
+            let mut parser = SfdParser::new(PathBuf::from("test.sfd"));
+            parser.font.names.family_name = family.into();
+            if !weight.is_empty() {
+                parser.font.format_specific.insert(
+                    "postscript_weight_name".to_string(),
+                    serde_json::Value::String(weight.to_string()),
+                );
+            }
+            parser.weight_suffix_of_family_name()
+        };
+
+        // The case this exists for.
+        assert_eq!(
+            split("Elsie Black", "Black"),
+            Some(("Elsie".to_string(), "Black".to_string()))
+        );
+        // The family name spaces the weight, the weight itself does not.
+        assert_eq!(
+            split("Elsie Swash Caps Black", "Black"),
+            Some(("Elsie Swash Caps".to_string(), "Black".to_string()))
+        );
+
+        // Weights that mean Regular are not a suffix worth splitting; almost
+        // every file in a FontForge corpus says "Book".
+        assert_eq!(split("Fjord One", "Book"), None);
+        assert_eq!(split("Anything", "Regular"), None);
+        assert_eq!(split("Anything", "Medium"), None);
+        assert_eq!(split("Anything", ""), None);
+
+        // The weight must actually end the family name.
+        assert_eq!(split("Elsie", "Black"), None);
+        assert_eq!(split("Black Ops One", "Black"), None);
+
+        // Nothing left over is not a split -- a family really called "Black"
+        // keeps its name.
+        assert_eq!(split("Black", "Black"), None);
+        assert_eq!(split("  Black  ", "Black"), None);
     }
 
     #[test]

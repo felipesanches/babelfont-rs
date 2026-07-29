@@ -965,22 +965,14 @@ impl SfdParser {
                     .unwrap_or_else(|| "Regular".to_string());
                 master.name = weight_name.into();
             }
-            if let Some(width) = self.font.custom_ot_values.os2_us_width_class {
-                if width != 5 {
-                    if let Some(width_name) = crate::constants::OS2_WIDTH_TO_NAME_MAP
-                        .iter()
-                        .find(|(w, _)| *w == width)
-                        .map(|(_, s)| s.to_string())
-                    {
-                        master.name = format!(
-                            "{} {}",
-                            width_name,
-                            master.name.get_default().unwrap_or(&"Regular".to_string())
-                        )
-                        .into();
-                    }
-                }
-            }
+            // The width class is NOT folded into the style name. A source that
+            // states "TTFWidth: 1" and leaves its style as Regular means the
+            // width belongs in usWidthClass, and that is where it now goes.
+            // Prepending it produced "UltraCondensed Regular", which the
+            // compiler reads as a non-standard style and pushes into the family
+            // name -- bowlbyonesc built as family "Bowlby One SC
+            // UltraCondensed" against a shipped "Bowlby One SC" that carries
+            // the same usWidthClass 1.
         }
 
         Ok(())

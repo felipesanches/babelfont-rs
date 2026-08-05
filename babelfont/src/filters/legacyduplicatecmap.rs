@@ -52,53 +52,6 @@ const DUPLICATES: &[(u32, &str)] = &[
 // of 119 families from clean to warning in a measured run, which is why the
 // AFDKO set is not adopted wholesale.
 
-/// Make a separate no-break space glyph as wide as the space glyph.
-///
-/// Where a source carries its own U+00A0 glyph rather than relying on the
-/// duplicate mapping, its advance is often not the space's -- FontForge
-/// synthesised the glyph at export and gave it the right width, so the source
-/// never had to be correct. Left alone, the built font has a no-break space
-/// that is a different width from its space, which font QA rejects
-/// (`whitespace_widths`) and which is visibly wrong when the two are mixed.
-///
-/// This is the other half of what makeotf-era sources needed by hand: of 107
-/// families modernized from FontForge sources, the per-repo notes record the
-/// no-break space advance being corrected to match the space in a large share
-/// of them. Doing it here means a reconversion no longer loses that work.
-///
-/// Only the width is touched, and only when both glyphs exist and disagree.
-fn normalise_nbsp_width(font: &mut crate::Font) {
-    let space_widths: Vec<f32> = font
-        .glyphs
-        .iter()
-        .find(|g| g.codepoints.contains(&0x0020))
-        .map(|g| g.layers.iter().map(|l| l.width).collect())
-        .unwrap_or_default();
-    if space_widths.is_empty() {
-        return;
-    }
-
-    let Some(nbsp) = font
-        .glyphs
-        .iter_mut()
-        .find(|g| g.codepoints.contains(&0x00A0) && !g.codepoints.contains(&0x0020))
-    else {
-        // Either there is no separate no-break space, or it is the space glyph
-        // itself carrying both codepoints -- in which case there is nothing to
-        // reconcile.
-        return;
-    };
-
-    for (layer, width) in nbsp.layers.iter_mut().zip(space_widths.iter()) {
-        if (layer.width - width).abs() > f32::EPSILON {
-            log::info!(
-                "Setting the no-break space advance to the space's ({} -> {width})",
-                layer.width
-            );
-            layer.width = *width;
-        }
-    }
-}
 
 impl FontFilter for LegacyDuplicateCmap {
     fn apply(&self, font: &mut crate::Font) -> Result<(), crate::BabelfontError> {
@@ -118,7 +71,6 @@ impl FontFilter for LegacyDuplicateCmap {
             }
         }
 
-        normalise_nbsp_width(font);
         Ok(())
     }
 
@@ -202,9 +154,12 @@ mod tests {
     }
 
     #[test]
-    fn a_separate_nbsp_is_widened_to_match_the_space() {
-        // FontForge synthesised the no-break space at export and gave it the
-        // right width, so sources that carry their own often have it wrong.
+    fn a_separate_nbsp_keeps_its_own_width() {
+        // This filter restores coverage; it must NOT change advances. A source
+        // that states its own no-break-space width usually means it: 15
+        // families in a Google Fonts corpus do, and the shipped binaries
+        // preserve the value exactly. Normalising it is a correction and lives
+        // behind --normalise-nbsp-width instead.
         let mut font = Font::new();
         font.glyphs.push(glyph_with_width("space", vec![0x0020], 616.0));
         font.glyphs
@@ -212,7 +167,10 @@ mod tests {
         LegacyDuplicateCmap::new().apply(&mut font).unwrap();
 
         let nbsp = font.glyphs.iter().find(|g| g.name == "uni00A0").unwrap();
-        assert_eq!(nbsp.layers[0].width, 616.0, "nbsp should match the space");
+        assert_eq!(
+            nbsp.layers[0].width, 720.0,
+            "the source's no-break-space advance must survive this filter"
+        );
         let space = font.glyphs.iter().find(|g| g.name == "space").unwrap();
         assert_eq!(space.layers[0].width, 616.0, "space must not move");
     }

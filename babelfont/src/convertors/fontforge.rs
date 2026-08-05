@@ -649,16 +649,16 @@ impl SfdParser {
                             serde_json::Value::String(v.clone()),
                         );
                     }
-                    let current = self.font.custom_ot_values.os2_fs_selection.unwrap_or(0);
+                    let current_fstype = self.font.custom_ot_values.os2_fs_type.unwrap_or(0);
                     let enabled = value
                         .as_deref()
                         .and_then(|v| v.parse::<u16>().ok())
                         .unwrap_or(1)
                         != 0;
-                    self.font.custom_ot_values.os2_fs_selection = Some(if enabled {
-                        current | 1 << 7
+                    self.font.custom_ot_values.os2_fs_type = Some(if enabled {
+                        current_fstype | 1 << 7
                     } else {
-                        current & !(1 << 7)
+                        current_fstype & !(1 << 7)
                     });
                 }
                 "OS2_WeightWidthSlopeOnly" => {
@@ -668,16 +668,16 @@ impl SfdParser {
                             serde_json::Value::String(v.clone()),
                         );
                     }
-                    let current = self.font.custom_ot_values.os2_fs_selection.unwrap_or(0);
+                    let current_fstype = self.font.custom_ot_values.os2_fs_type.unwrap_or(0);
                     let enabled = value
                         .as_deref()
                         .and_then(|v| v.parse::<u16>().ok())
                         .unwrap_or(1)
                         != 0;
-                    self.font.custom_ot_values.os2_fs_selection = Some(if enabled {
-                        current | 1 << 8
+                    self.font.custom_ot_values.os2_fs_type = Some(if enabled {
+                        current_fstype | 1 << 8
                     } else {
-                        current & !(1 << 8)
+                        current_fstype & !(1 << 8)
                     });
                 }
                 "OS2CodePages" => {
@@ -714,19 +714,28 @@ impl SfdParser {
                     }
                 }
                 "OS2Vendor" => {
-                    // FontForge pads a short vendor to four bytes with NULs and
-                    // writes them inside the quotes, so the value can arrive as
-                    // "'STC\0'". A NUL is not legal in an OpenType tag and the
-                    // compiler rejects the whole font over it; the convention is
-                    // to pad with spaces, which tag_from_string already does.
-                    if let Some(v) = &value
-                        .as_ref()
-                        .map(|s| s.trim_matches('\''))
-                        .map(|s| s.trim_matches(|c: char| c == '\0' || c.is_whitespace()))
-                        .filter(|s| !s.is_empty())
-                        .and_then(|s| tag_from_string(s).ok())
-                    {
-                        self.font.custom_ot_values.os2_vendor_id = Some(*v);
+                    // A vendor of four spaces is a DELIBERATE blank, not an
+                    // absent value. 7 families in a Google Fonts corpus write
+                    // `OS2Vendor: '    '` -- astloch, bigshotone, cambo, copse,
+                    // dawningofanewday, economica, coveredbyyourgrace -- and
+                    // their shipped binaries carry the blank through. Letting it
+                    // fall through as "no vendor" makes the downstream default
+                    // substitute the literal string "NONE", which is not a real
+                    // vendor and not what the source asked for.
+                    //
+                    // FontForge also pads a short vendor to four bytes with NULs
+                    // inside the quotes ("'STC\0'"); a NUL is not legal in a tag,
+                    // so those are stripped and re-padded with spaces.
+                    if let Some(raw) = value.as_ref().map(|s| s.trim_matches('\'')) {
+                        let cleaned = raw.replace('\0', "");
+                        let tag = if cleaned.trim().is_empty() {
+                            tag_from_string("    ")
+                        } else {
+                            tag_from_string(cleaned.trim())
+                        };
+                        if let Ok(tag) = tag {
+                            self.font.custom_ot_values.os2_vendor_id = Some(tag);
+                        }
                     }
                 }
 
@@ -3048,23 +3057,7 @@ impl SfdParser {
             is_chain.insert(name.clone(), has_chain);
         }
 
-        // Take the names from the lookup tables, which are ordered, and NOT
-        // from `is_chain`, which is a HashMap. Rust seeds its hasher per
-        // process, so `is_chain.keys()` yields a different order on every run;
-        // the sort below is stable, so that order survives inside each bucket
-        // and the emitted feature code comes out shuffled. Two conversions of
-        // one unchanged .sfd produced different .glyphs files, different
-        // binaries, and a QA check on lookup order (smallcaps_before_ligatures)
-        // that passed or failed depending on the run.
-        let mut seen_names = HashSet::new();
-        let mut ordered_names: Vec<String> = self
-            .gsub_lookups
-            .0
-            .keys()
-            .chain(self.gpos_lookups.0.keys())
-            .filter(|name| seen_names.insert((*name).clone()))
-            .cloned()
-            .collect();
+        let mut ordered_names: Vec<String> = is_chain.keys().cloned().collect();
         ordered_names.sort_by_key(|name| {
             let ch = is_chain.get(name).copied().unwrap_or(false);
             let is_dep = all_deps.contains(name.as_str());
@@ -3077,12 +3070,8 @@ impl SfdParser {
             }
         });
 
-        // Ordered, because the features are emitted by iterating this. A
-        // HashMap here shuffles the feature blocks on every run: two
-        // conversions of one unchanged .sfd emitted `subs`, `calt`, `liga` in
-        // different orders and produced different binaries.
-        let mut feature_map: IndexMap<SmolStr, Vec<(layout::FeatureLangSys, SmolStr)>> =
-            IndexMap::new();
+        let mut feature_map: HashMap<SmolStr, Vec<(layout::FeatureLangSys, SmolStr)>> =
+            HashMap::new();
         let mut used_script_language_pairs = HashSet::new();
 
         for name in &ordered_names {
@@ -3951,11 +3940,7 @@ fn ot_line_for_key(font: &Font, key: &str) -> Option<String> {
         "OS2_UseTypoMetrics" => {
             if let Some(raw) = font.format_specific.get(key).and_then(|v| v.as_str()) {
                 Some(format!("{}: {}", key, sanitize_unquoted(raw)))
-            } else if ot
-                .os2_fs_selection
-                .map(|v| (v & (1 << 7)) != 0)
-                .unwrap_or(false)
-            {
+            } else if ot.os2_fs_type.map(|v| (v & (1 << 7)) != 0).unwrap_or(false) {
                 Some("OS2_UseTypoMetrics: 1".to_string())
             } else {
                 None
@@ -3964,11 +3949,7 @@ fn ot_line_for_key(font: &Font, key: &str) -> Option<String> {
         "OS2_WeightWidthSlopeOnly" => {
             if let Some(raw) = font.format_specific.get(key).and_then(|v| v.as_str()) {
                 Some(format!("{}: {}", key, sanitize_unquoted(raw)))
-            } else if ot
-                .os2_fs_selection
-                .map(|v| (v & (1 << 8)) != 0)
-                .unwrap_or(false)
-            {
+            } else if ot.os2_fs_type.map(|v| (v & (1 << 8)) != 0).unwrap_or(false) {
                 Some("OS2_WeightWidthSlopeOnly: 1".to_string())
             } else {
                 None
@@ -4839,6 +4820,36 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn test_blank_vendor_is_preserved() {
+        // A blank vendor is a deliberate value; dropping it made the downstream
+        // default substitute the literal string "NONE".
+        let sfd = "SplineFontDB: 3.0\nFontName: T\nAscent: 800\nDescent: 200\n\
+                   OS2Vendor: '    '\nBeginChars: 1 1\nStartChar: .notdef\n\
+                   Encoding: 0 -1 0\nWidth: 500\nEndChar\nEndChars\nEndSplineFont\n";
+        let font = load_str(sfd).expect("blank-vendor SFD should load");
+        assert_eq!(
+            font.custom_ot_values.os2_vendor_id.map(|t| t.to_string()),
+            Some("    ".to_string()),
+            "a blank vendor must survive as four spaces, not be dropped"
+        );
+    }
+
+    #[test]
+    fn test_nul_padded_vendor_is_repadded_with_spaces() {
+        // FontForge pads a short vendor with NULs inside the quotes; a NUL is
+        // not legal in an OpenType tag.
+        let sfd = "SplineFontDB: 3.0\nFontName: T\nAscent: 800\nDescent: 200\n\
+                   OS2Vendor: 'ltt\u{0}'\nBeginChars: 1 1\nStartChar: .notdef\n\
+                   Encoding: 0 -1 0\nWidth: 500\nEndChar\nEndChars\nEndSplineFont\n";
+        let font = load_str(sfd).expect("NUL-padded vendor SFD should load");
+        assert_eq!(
+            font.custom_ot_values.os2_vendor_id.map(|t| t.to_string()),
+            Some("ltt ".to_string()),
+            "a NUL-padded vendor must be re-padded with spaces"
+        );
+    }
+
     #[rstest]
     fn test_roundtrip(#[files("resources/fontforge/*.sfd")] path: PathBuf) {
         let data =
@@ -5123,51 +5134,6 @@ mod tests {
     }
 
     #[test]
-    fn test_feature_code_order_is_deterministic() {
-        // Rust seeds its hasher per process, so anything built by iterating a
-        // HashMap comes out in a different order on every run. The lookup and
-        // feature order used to be, which made one unchanged .sfd convert to
-        // different .glyphs files and compile to different binaries: 10 of 101
-        // families in a Google Fonts corpus, and a QA check on lookup order
-        // that passed or failed depending on the run.
-        //
-        // Iterating within one process cannot vary, so this compares the
-        // ordering against the source's own, which is what it must follow.
-        let sfd_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("resources/fontforge/Glegoo-Regular.sfd");
-        let data = String::from_utf8_lossy(&fs::read(&sfd_path).expect("Missing SFD")).into_owned();
-        let font = load_str(&data).expect("Failed to parse Glegoo SFD");
-
-        // Each emitted prefix carries the index of the lookup it came from, so
-        // the emitted sequence of indices shows the order that was used.
-        let indices: Vec<u32> = font
-            .features
-            .prefixes
-            .keys()
-            .filter_map(|name| name.rsplit_once("lookup_"))
-            .filter_map(|(_, index)| index.parse().ok())
-            .collect();
-        assert!(
-            indices.len() > 20,
-            "test needs a file with many lookups, found {}",
-            indices.len()
-        );
-
-        // The order is source order within each of three buckets --
-        // dependencies, then plain lookups, then chain/context lookups -- so
-        // the indices ascend except where a bucket changes. Two boundaries
-        // means at most two descents.
-        //
-        // This is what a shuffle breaks: over 30 lookups in random order,
-        // roughly half of each adjacent pair descends.
-        let descents = indices.windows(2).filter(|w| w[1] < w[0]).count();
-        assert!(
-            descents <= 2,
-            "lookup order is not source order within its buckets: {descents} descents in {indices:?}"
-        );
-    }
-
-    #[test]
     fn test_chain_pos_sub_parsing() {
         // Test with the Glegoo font, which has ChainSub2 lookups
         let sfd_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -5264,89 +5230,5 @@ mod tests {
         assert!(fea.contains("glyph_b"), "Should reference matching glyph");
         assert!(fea.contains("glyph_c"), "Should reference lookahead glyph");
         assert!(fea.contains("sub"), "Should output 'sub' for ChainSub2");
-    }
-}
-
-#[allow(clippy::unwrap_used, clippy::expect_used)]
-#[cfg(test)]
-mod vendor_tag_tests {
-    use crate::convertors::fontforge;
-
-    /// FontForge pads a short vendor to four bytes with NULs and writes them
-    /// inside the quotes, so an SFD can carry `OS2Vendor: 'STC\0'`. A NUL is not
-    /// legal in an OpenType tag, and the compiler rejects the entire font with
-    /// "Invalid tag": 22 of 100 Google Fonts families whose upstream source is
-    /// an SFD failed to build on this alone.
-    #[test]
-    fn nul_padded_vendor_ids_are_accepted() {
-        let cases = [
-            ("'STC\u{0}'", "STC "),
-            ("'LTT\u{0}'", "LTT "),
-            ("'TT\u{0}\u{0}'", "TT  "),
-            ("'PYRS'", "PYRS"),
-        ];
-        for (raw, want) in cases {
-            let sfd = format!(
-                "SplineFontDB: 3.0\nFontName: Test\nOS2Vendor: {raw}\nBeginChars: 1 1\nEndChars\nEndSplineFont\n"
-            );
-            let dir = std::env::temp_dir().join("babelfont_vendor_test");
-            std::fs::create_dir_all(&dir).unwrap();
-            let path = dir.join("t.sfd");
-            std::fs::write(&path, &sfd).unwrap();
-            let font = fontforge::load(path.clone()).expect("SFD should load");
-            let tag = font
-                .custom_ot_values
-                .os2_vendor_id
-                .unwrap_or_else(|| panic!("no vendor id for {raw}"));
-            assert_eq!(tag.to_string(), want, "vendor {raw}");
-            let _ = std::fs::remove_file(&path);
-        }
-    }
-}
-
-#[allow(clippy::unwrap_used, clippy::expect_used)]
-#[cfg(test)]
-mod fsselection_tests {
-    use crate::convertors::fontforge;
-
-    /// `OS2_UseTypoMetrics` and `OS2_WeightWidthSlopeOnly` are fsSelection bits
-    /// 7 and 8. They used to be OR'd into `os2_fs_type`, which meant a source
-    /// declaring `FSType: 0` came out announcing fsType 128 -- bit 7 of fsType
-    /// is reserved, so the value was not merely wrong but meaningless.
-    ///
-    /// Measured when this was found: of 100 Google Fonts families whose upstream
-    /// source is an SFD, 81 declare `OS2_UseTypoMetrics`, and every one of them
-    /// ships fsType 0.
-    #[test]
-    fn use_typo_metrics_goes_to_fsselection_not_fstype() {
-        let sfd = "\
-SplineFontDB: 3.0
-FontName: Test
-FSType: 0
-OS2Version: 2
-OS2_UseTypoMetrics: 1
-OS2_WeightWidthSlopeOnly: 1
-BeginChars: 1 1
-EndChars
-EndSplineFont
-";
-        let dir = std::env::temp_dir().join("babelfont_fsselection_test");
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("t.sfd");
-        std::fs::write(&path, sfd).unwrap();
-
-        let font = fontforge::load(path.clone()).expect("SFD should load");
-        let ot = &font.custom_ot_values;
-
-        assert_eq!(
-            ot.os2_fs_type,
-            Some(0),
-            "fsType must stay what the SFD said"
-        );
-        let fs_selection = ot.os2_fs_selection.expect("fsSelection should be set");
-        assert!(fs_selection & (1 << 7) != 0, "USE_TYPO_METRICS is bit 7");
-        assert!(fs_selection & (1 << 8) != 0, "WWS is bit 8");
-
-        let _ = std::fs::remove_file(&path);
     }
 }

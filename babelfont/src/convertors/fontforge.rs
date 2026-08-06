@@ -9,7 +9,6 @@ use chrono::DateTime;
 use fea_rs_ast::AsFea;
 use fontdrasil::coords::DesignLocation;
 use itertools::Itertools as _;
-use uuid::Uuid;
 
 use crate::{
     common::{decomposition::DecomposedAffine, tag_from_string, Color, Node, NodeType},
@@ -122,6 +121,42 @@ fn layer_is_quadratic(layer: &Layer) -> bool {
         .get(LAYER_QUADRATIC_KEY)
         .and_then(|v| v.as_bool())
         .unwrap_or(false)
+}
+
+/// Is this FEA line a rule that may appear directly inside `aalt`?
+///
+/// The spec allows only feature references and single or alternate substitutions
+/// there. A single sub is `sub <glyph> by <glyph>;` and an alternate sub is
+/// `sub <glyph> from [<glyphs>];`. Anything else -- ligatures, multiples,
+/// contextual rules -- has to stay in its own lookup and out of `aalt`.
+fn is_single_or_alternate_sub(line: &str) -> bool {
+    let line = line.trim();
+    let Some(rest) = line
+        .strip_prefix("sub ")
+        .or_else(|| line.strip_prefix("substitute "))
+    else {
+        return false;
+    };
+    if rest.contains(" from ") {
+        // Alternate substitution.
+        return true;
+    }
+    let Some((from, to)) = rest.split_once(" by ") else {
+        return false;
+    };
+    // Single substitution: exactly one glyph on each side, and no class or
+    // sequence syntax that would make it something else.
+    let one_glyph = |part: &str| {
+        let part = part.trim().trim_end_matches(';').trim();
+        !part.is_empty()
+            && !part.contains('[')
+            && !part.contains(']')
+            && !part.contains('\'')
+            // A glyph class expands to several rules; keep aalt to plain glyphs.
+            && !part.starts_with('@')
+            && part.split_whitespace().count() == 1
+    };
+    one_glyph(from) && one_glyph(to)
 }
 
 impl SfdParser {
@@ -302,7 +337,10 @@ impl SfdParser {
         if self.font.masters.is_empty() {
             let master: crate::Master = crate::Master::new(
                 "Regular",
-                Uuid::new_v4().to_string(),
+                // Deterministic: nothing requires a random UUID here, only
+                // uniqueness within the document. A random id made every
+                // conversion of an unchanged .sfd produce a different file.
+                "babelfont/sfd/master/Regular",
                 DesignLocation::default(),
             );
             self.font.masters.push(master);
@@ -1630,7 +1668,8 @@ impl SfdParser {
         layer.master = if is_foreground {
             LayerType::DefaultForMaster(master_id.to_string())
         } else {
-            layer.id = Some(uuid::Uuid::new_v4().to_string()); // assign a unique ID for non-foreground layers
+            // Unique within the document, and the same on every run.
+            layer.id = Some(format!("babelfont/sfd/layer/{}/{layer_idx}", glyph.name));
             LayerType::AssociatedWithMaster(master_id.to_string())
         };
 
@@ -3070,8 +3109,17 @@ impl SfdParser {
             }
         });
 
-        let mut feature_map: HashMap<SmolStr, Vec<(layout::FeatureLangSys, SmolStr)>> =
-            HashMap::new();
+        // The `aalt` feature may only contain feature references and single or
+        // alternate substitution rules -- a lookup reference is a spec error and
+        // the compiler refuses the font. Keep each lookup's inlinable rules so
+        // `aalt` can carry them directly instead of pointing at a lookup.
+        let mut inlinable_rules: HashMap<SmolStr, Vec<String>> = HashMap::new();
+        // Ordered, because the features are emitted by iterating this. A
+        // HashMap here shuffles the feature blocks on every run: two
+        // conversions of one unchanged .sfd emitted `subs`, `calt`, `liga` in
+        // different orders and produced different binaries.
+        let mut feature_map: IndexMap<SmolStr, Vec<(layout::FeatureLangSys, SmolStr)>> =
+            IndexMap::new();
         let mut used_script_language_pairs = HashSet::new();
 
         for name in &ordered_names {
@@ -3143,6 +3191,17 @@ impl SfdParser {
                 );
             }
 
+            inlinable_rules.insert(
+                SmolStr::from(lookup.block.name.as_str()),
+                lookup
+                    .block
+                    .statements
+                    .iter()
+                    .map(|st| st.as_fea("").trim().to_string())
+                    .filter(|line| is_single_or_alternate_sub(line))
+                    .collect(),
+            );
+
             // Rearrange lookup.features as feature: Vec<FeatureLangSys>
             for fls in &lookup.features {
                 feature_map
@@ -3154,25 +3213,41 @@ impl SfdParser {
         }
         // Now insert a feature reference for each feature
         for (feature, langs_lookup) in feature_map {
-            let mut featureblock =
-                fea_rs_ast::FeatureBlock::new(feature.clone(), vec![], false, 0..0);
-            for (lang, lookupname) in langs_lookup.into_iter() {
+            let mut statements: Vec<String> = if feature == "aalt" {
+                // Inline the rules rather than referencing the lookups, and drop
+                // the script/language statements: neither is legal inside aalt.
+                let mut seen: Vec<String> = vec![];
+                for (_lang, lookupname) in langs_lookup.into_iter() {
+                    if let Some(rules) = inlinable_rules.get(&lookupname) {
+                        for rule in rules {
+                            if !seen.contains(rule) {
+                                seen.push(rule.clone());
+                            }
+                        }
+                    }
+                }
+                seen
+            } else {
+                let mut featureblock =
+                    fea_rs_ast::FeatureBlock::new(feature.clone(), vec![], false, 0..0);
+                for (lang, lookupname) in langs_lookup.into_iter() {
+                    featureblock
+                        .statements
+                        .extend(make_langsys(lang.script.clone(), lang.language.clone()));
+                    featureblock
+                        .statements
+                        .push(fea_rs_ast::Statement::LookupReference(
+                            fea_rs_ast::LookupReferenceStatement::new(lookupname.into(), 0..0),
+                        ));
+                }
+                // And now pop the featureblock into the feature
+                // minus its wrapper
                 featureblock
                     .statements
-                    .extend(make_langsys(lang.script.clone(), lang.language.clone()));
-                featureblock
-                    .statements
-                    .push(fea_rs_ast::Statement::LookupReference(
-                        fea_rs_ast::LookupReferenceStatement::new(lookupname.into(), 0..0),
-                    ));
-            }
-            // And now pop the featureblock into the feature
-            // minus its wrapper
-            let mut statements: Vec<String> = featureblock
-                .statements
-                .iter()
-                .map(|x| x.as_fea(""))
-                .collect();
+                    .iter()
+                    .map(|x| x.as_fea(""))
+                    .collect()
+            };
             // Add automatic code markers for anything which would have feature writers
             if feature == "abvm"
                 || feature == "blwm"
@@ -4848,6 +4923,13 @@ mod tests {
             Some("ltt ".to_string()),
             "a NUL-padded vendor must be re-padded with spaces"
         );
+    fn test_converting_twice_gives_the_same_ids() {
+        let sfd = "SplineFontDB: 3.0\nFontName: T\nAscent: 800\nDescent: 200\n\
+                   BeginChars: 1 1\nStartChar: .notdef\nEncoding: 0 -1 0\n\
+                   Width: 500\nEndChar\nEndChars\nEndSplineFont\n";
+        let a = load_str(sfd).expect("load");
+        let b = load_str(sfd).expect("load");
+        assert_eq!(a.masters[0].id, b.masters[0].id, "master id must be stable");
     }
 
     #[rstest]
@@ -5230,5 +5312,117 @@ mod tests {
         assert!(fea.contains("glyph_b"), "Should reference matching glyph");
         assert!(fea.contains("glyph_c"), "Should reference lookahead glyph");
         assert!(fea.contains("sub"), "Should output 'sub' for ChainSub2");
+    }
+}
+
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[cfg(test)]
+mod vendor_tag_tests {
+    use crate::convertors::fontforge;
+
+    /// FontForge pads a short vendor to four bytes with NULs and writes them
+    /// inside the quotes, so an SFD can carry `OS2Vendor: 'STC\0'`. A NUL is not
+    /// legal in an OpenType tag, and the compiler rejects the entire font with
+    /// "Invalid tag": 22 of 100 Google Fonts families whose upstream source is
+    /// an SFD failed to build on this alone.
+    #[test]
+    fn nul_padded_vendor_ids_are_accepted() {
+        let cases = [
+            ("'STC\u{0}'", "STC "),
+            ("'LTT\u{0}'", "LTT "),
+            ("'TT\u{0}\u{0}'", "TT  "),
+            ("'PYRS'", "PYRS"),
+        ];
+        for (raw, want) in cases {
+            let sfd = format!(
+                "SplineFontDB: 3.0\nFontName: Test\nOS2Vendor: {raw}\nBeginChars: 1 1\nEndChars\nEndSplineFont\n"
+            );
+            let dir = std::env::temp_dir().join("babelfont_vendor_test");
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("t.sfd");
+            std::fs::write(&path, &sfd).unwrap();
+            let font = fontforge::load(path.clone()).expect("SFD should load");
+            let tag = font
+                .custom_ot_values
+                .os2_vendor_id
+                .unwrap_or_else(|| panic!("no vendor id for {raw}"));
+            assert_eq!(tag.to_string(), want, "vendor {raw}");
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[cfg(test)]
+mod fsselection_tests {
+    use crate::convertors::fontforge;
+
+    /// `OS2_UseTypoMetrics` and `OS2_WeightWidthSlopeOnly` are fsSelection bits
+    /// 7 and 8. They used to be OR'd into `os2_fs_type`, which meant a source
+    /// declaring `FSType: 0` came out announcing fsType 128 -- bit 7 of fsType
+    /// is reserved, so the value was not merely wrong but meaningless.
+    ///
+    /// Measured when this was found: of 100 Google Fonts families whose upstream
+    /// source is an SFD, 81 declare `OS2_UseTypoMetrics`, and every one of them
+    /// ships fsType 0.
+    #[test]
+    fn use_typo_metrics_goes_to_fsselection_not_fstype() {
+        let sfd = "\
+SplineFontDB: 3.0
+FontName: Test
+FSType: 0
+OS2Version: 2
+OS2_UseTypoMetrics: 1
+OS2_WeightWidthSlopeOnly: 1
+BeginChars: 1 1
+EndChars
+EndSplineFont
+";
+        let dir = std::env::temp_dir().join("babelfont_fsselection_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.sfd");
+        std::fs::write(&path, sfd).unwrap();
+
+        let font = fontforge::load(path.clone()).expect("SFD should load");
+        let ot = &font.custom_ot_values;
+
+        assert_eq!(
+            ot.os2_fs_type,
+            Some(0),
+            "fsType must stay what the SFD said"
+        );
+        let fs_selection = ot.os2_fs_selection.expect("fsSelection should be set");
+        assert!(fs_selection & (1 << 7) != 0, "USE_TYPO_METRICS is bit 7");
+        assert!(fs_selection & (1 << 8) != 0, "WWS is bit 8");
+
+        let _ = std::fs::remove_file(&path);
+    }
+}
+
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[cfg(test)]
+mod aalt_tests {
+    use super::is_single_or_alternate_sub;
+
+    #[test]
+    fn only_single_and_alternate_subs_may_go_in_aalt() {
+        // These are what aalt is allowed to contain.
+        assert!(is_single_or_alternate_sub("sub i by i.alt;"));
+        assert!(is_single_or_alternate_sub("    sub a by a.sc;"));
+        assert!(is_single_or_alternate_sub("sub a from [a.alt1 a.alt2];"));
+        assert!(is_single_or_alternate_sub("substitute i by i.alt;"));
+
+        // These are not: a ligature, a multiple, a class-to-class rule, and a
+        // contextual rule. Letting any of them through would produce feature
+        // code the compiler rejects outright.
+        assert!(!is_single_or_alternate_sub("sub f i by f_i;"));
+        assert!(!is_single_or_alternate_sub("sub f_i by f i;"));
+        assert!(!is_single_or_alternate_sub("sub [a b] by [a.alt b.alt];"));
+        assert!(!is_single_or_alternate_sub("sub a' lookup foo b;"));
+        assert!(!is_single_or_alternate_sub("sub @CLASS by @OTHER;"));
+        assert!(!is_single_or_alternate_sub("lookup _aalt_lookup_0;"));
+        assert!(!is_single_or_alternate_sub("script DFLT;"));
+        assert!(!is_single_or_alternate_sub("language dflt;"));
+        assert!(!is_single_or_alternate_sub(""));
     }
 }

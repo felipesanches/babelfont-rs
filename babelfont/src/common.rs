@@ -34,9 +34,7 @@ pub(crate) fn normalise_version_string(value: &str) -> Option<String> {
     // The number may be followed by more text, and usually is -- FontForge
     // writes the ttfautohint invocation into the same field:
     //   "1.001; ttfautohint (v0.92) -l 10 -r 16 -G 200 -x 7 -w \"GD\""
-    // Requiring the whole value to be numeric leaves those unprefixed, and the
-    // built font fails the version format check while the shipped one, which
-    // says "Version 1.002; ttfautohint (v0.92) ...", passes.
+    // Requiring the whole value to be numeric would leave those unprefixed.
     let (number, suffix) = split_leading_version_number(rest);
     if number.is_empty() {
         return Some(trimmed.to_string());
@@ -242,8 +240,8 @@ mod version_tests {
             assert_eq!(format!("{major}.{minor:03}"), want);
         }
 
-        // The float route this replaced: (1.002 - 1.0) * 100.0 rounds to 0, so
-        // head.fontRevision came out 1.000 against a name saying 1.002.
+        // A float fraction is the wrong model: (1.002 - 1.0) * 100.0 rounds
+        // to 0, collapsing the minor while name ID 5 still says 1.002.
         let (_, minor) = version_major_minor("1.002").unwrap();
         assert_ne!(minor, 0, "1.002 must not collapse to a zero minor");
 
@@ -263,7 +261,7 @@ mod version_tests {
         );
         assert_eq!(version_major_minor(hinted), Some((1, 1)));
 
-        // A trailing year, the other form in the corpus.
+        // A trailing year is another common suffix.
         assert_eq!(
             normalise_version_string("1.002 2010").as_deref(),
             Some("Version 1.002 2010")

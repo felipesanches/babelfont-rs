@@ -213,13 +213,9 @@ fn fs_type_bits(value: u16) -> Vec<i64> {
         .collect()
 }
 
-/// Write the OS/2 and `head` values a source recorded out as custom parameters.
-///
-/// Formats that carry these -- FontForge SFD names them `FSType`, `Panose`,
-/// `OS2Vendor` and so on -- had them read into `custom_ot_values` and then
-/// dropped: only the vendor ID was ever written back out. Everything else fell
-/// through to the compiler's defaults, so a source declaring `FSType: 0` still
-/// built a font announcing restricted embedding.
+/// Write the OS/2 and `head` values a source recorded (FontForge SFD:
+/// `FSType`, `Panose`, `OS2Vendor`, ...) out as custom parameters, so they
+/// reach the compiler instead of its defaults.
 ///
 /// Fields deliberately not exported here:
 ///

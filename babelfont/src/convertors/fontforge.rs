@@ -649,7 +649,6 @@ impl SfdParser {
                             serde_json::Value::String(v.clone()),
                         );
                     }
-                    // USE_TYPO_METRICS is fsSelection bit 7, not an fsType bit.
                     let current = self.font.custom_ot_values.os2_fs_selection.unwrap_or(0);
                     let enabled = value
                         .as_deref()
@@ -669,7 +668,6 @@ impl SfdParser {
                             serde_json::Value::String(v.clone()),
                         );
                     }
-                    // WEIGHT_WIDTH_SLOPE_ONLY is fsSelection bit 8, not an fsType bit.
                     let current = self.font.custom_ot_values.os2_fs_selection.unwrap_or(0);
                     let enabled = value
                         .as_deref()

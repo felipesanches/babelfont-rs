@@ -29,10 +29,9 @@ pub(crate) fn single_line(value: &str) -> String {
     value
         .split(['\r', '\n'])
         // A name record cannot carry a control character at all. Line breaks
-        // become the join below; anything else in C0 (NUL especially) is simply
-        // removed. Two families in a Google Fonts corpus -- architectsdaughter
-        // and dawningofanewday -- encode a literal U+0000 in their licence text
-        // (`+AA0ACgAA-` is CR, LF, NUL), and it reached the built font.
+        // become the join below; anything else in C0 (NUL especially) is
+        // simply removed. Real licence text does encode NUL: an SFD LangName
+        // `+AA0ACgAA-` run is CR, LF, NUL.
         .map(|part| part.chars().filter(|c| !c.is_control()).collect::<String>())
         .map(|part| part.trim().to_string())
         .filter(|part| !part.is_empty())
@@ -179,8 +178,7 @@ mod tests {
         assert_eq!(single_line(""), "");
 
         // A control character can never appear in a name record. NUL is the
-        // one that actually occurs: two families encode U+0000 in their
-        // licence text.
+        // one that actually occurs in licence text.
         assert_eq!(single_line("a\u{0}b"), "ab");
         assert_eq!(
             single_line("---\r\n\u{0}SIL OPEN FONT"),

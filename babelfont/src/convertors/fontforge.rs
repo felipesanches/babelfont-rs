@@ -115,44 +115,6 @@ fn remove_implicit_move_in_closed_path(p: &mut Path) {
 
 type SplineSegment = (Vec<(f64, f64)>, char, String);
 
-/// A deterministic stand-in for a random UUID.
-///
-/// The IDs Glyphs uses for masters and layers only need to be unique *within
-/// one document*; nothing requires them to be random. Minting them with
-/// `Uuid::new_v4()` made every conversion of an unchanged `.sfd` produce a
-/// different file -- one UUID appears once as the master `id` and again on
-/// every glyph layer, so two byte-equivalent conversions of a small font
-/// differed on 522 lines.
-///
-/// That does not reach the compiled binary, but it means a third party cannot
-/// re-run the converter and confirm a committed source: they get an equivalent
-/// file with hundreds of differing lines. For a mechanical pass over ~100
-/// repositories that is the difference between a reviewable change and an
-/// unverifiable one.
-///
-/// FNV-1a rather than `Uuid::new_v5`, which would need another crate feature,
-/// and written out explicitly so the value can never drift with a dependency.
-fn stable_id(seed: &str) -> String {
-    fn fnv1a(seed: &str, salt: u64) -> u64 {
-        let mut hash: u64 = 0xcbf2_9ce4_8422_2325 ^ salt;
-        for byte in seed.bytes() {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-        hash
-    }
-    let a = fnv1a(seed, 0);
-    let b = fnv1a(seed, 0x9e37_79b9_7f4a_7c15);
-    format!(
-        "{:08X}-{:04X}-{:04X}-{:04X}-{:012X}",
-        (a >> 32) as u32,
-        (a >> 16) as u16,
-        a as u16,
-        (b >> 48) as u16,
-        b & 0x0000_FFFF_FFFF_FFFF
-    )
-}
-
 fn layer_is_quadratic(layer: &Layer) -> bool {
     layer
         .format_specific
@@ -339,7 +301,10 @@ impl SfdParser {
         if self.font.masters.is_empty() {
             let master: crate::Master = crate::Master::new(
                 "Regular",
-                stable_id("babelfont/sfd/master/Regular"),
+                // Deterministic: nothing requires a random UUID here, only
+                // uniqueness within the document. A random id made every
+                // conversion of an unchanged .sfd produce a different file.
+                "babelfont/sfd/master/Regular",
                 DesignLocation::default(),
             );
             self.font.masters.push(master);
@@ -1652,10 +1617,7 @@ impl SfdParser {
             LayerType::DefaultForMaster(master_id.to_string())
         } else {
             // Unique within the document, and the same on every run.
-            layer.id = Some(stable_id(&format!(
-                "babelfont/sfd/layer/{}/{layer_idx}",
-                glyph.name
-            )));
+            layer.id = Some(format!("babelfont/sfd/layer/{}/{layer_idx}", glyph.name));
             LayerType::AssociatedWithMaster(master_id.to_string())
         };
 
@@ -4844,38 +4806,6 @@ mod tests {
     use similar::TextDiff;
 
     use super::*;
-
-    #[test]
-    fn test_ids_are_deterministic_and_distinct() {
-        // Master and layer IDs only need to be unique within a document. Random
-        // ones made every conversion of an unchanged .sfd differ, which makes a
-        // committed source unverifiable by a third party.
-        assert_eq!(stable_id("a"), stable_id("a"), "same seed, same id");
-        assert_ne!(
-            stable_id("a"),
-            stable_id("b"),
-            "different seeds must differ"
-        );
-
-        // UUID-shaped, so anything parsing the field still works.
-        let id = stable_id("babelfont/sfd/master/Regular");
-        let parts: Vec<&str> = id.split('-').collect();
-        assert_eq!(
-            parts.iter().map(|p| p.len()).collect::<Vec<_>>(),
-            vec![8, 4, 4, 4, 12],
-            "not UUID-shaped: {id}"
-        );
-        assert!(id.chars().all(|c| c.is_ascii_hexdigit() || c == '-'));
-
-        // Layer seeds vary by glyph and by index, so no two collide.
-        let mut seen = std::collections::HashSet::new();
-        for glyph in ["A", "B", "uni00A0"] {
-            for idx in 0..3 {
-                let s = stable_id(&format!("babelfont/sfd/layer/{glyph}/{idx}"));
-                assert!(seen.insert(s), "collision for {glyph}/{idx}");
-            }
-        }
-    }
 
     #[test]
     fn test_converting_twice_gives_the_same_ids() {

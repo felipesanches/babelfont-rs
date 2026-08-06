@@ -12,12 +12,6 @@ use crate::filters::FontFilter;
 /// is the one that matters in practice: it appears in ordinary web text, and a
 /// font without it breaks a space that was meant to be unbreakable.
 ///
-/// This is not speculative. In one corpus of Google Fonts families converted
-/// from FontForge sources, 61 of 107 needed U+00A0 added by hand after
-/// conversion to reproduce what the shipped binary had; in a second corpus
-/// converted from FontLab sources, 5 families lose it and 2 more lose
-/// U+00AD/U+2219.
-///
 /// Deliberately conservative on both sides:
 ///
 ///   * the codepoint is only added when it is **not already mapped** anywhere in
@@ -48,9 +42,7 @@ const DUPLICATES: &[(u32, &str)] = &[
 
 // U+00AD SOFT HYPHEN is deliberately NOT here, though makeotf did add it. It is
 // a formatting character rather than a glyph, and font QA rejects encoding it:
-// fontspector's `soft_hyphen` warns on any font that has one. Adding it took 53
-// of 119 families from clean to warning in a measured run, which is why the
-// AFDKO set is not adopted wholesale.
+// fontspector's `soft_hyphen` warns on any font that has one.
 
 
 impl FontFilter for LegacyDuplicateCmap {
@@ -156,10 +148,8 @@ mod tests {
     #[test]
     fn a_separate_nbsp_keeps_its_own_width() {
         // This filter restores coverage; it must NOT change advances. A source
-        // that states its own no-break-space width usually means it: 15
-        // families in a Google Fonts corpus do, and the shipped binaries
-        // preserve the value exactly. Normalising it is a correction and lives
-        // behind --normalise-nbsp-width instead.
+        // that states its own no-break-space width means it. Normalising the
+        // width is a correction and lives behind --normalise-nbsp-width.
         let mut font = Font::new();
         font.glyphs.push(glyph_with_width("space", vec![0x0020], 616.0));
         font.glyphs
@@ -197,10 +187,9 @@ mod tests {
 
     #[test]
     fn the_soft_hyphen_is_never_added() {
-        // U+00AD is a formatting character, not a glyph. Font QA warns on any
-        // font that encodes one, and adding it regressed 53 of 119 families in
-        // a measured run -- so it stays out of the table even though makeotf
-        // used to add it.
+        // U+00AD is a formatting character, not a glyph; font QA warns on any
+        // font that encodes one, so it stays out of the table even though
+        // makeotf added it.
         let mut font = Font::new();
         font.glyphs.push(glyph("hyphen", vec![0x002D]));
         LegacyDuplicateCmap::new().apply(&mut font).unwrap();

@@ -7,27 +7,11 @@
 //! space's. Font QA rejects that (`whitespace_widths`), and mixing the two in
 //! running text is visibly wrong, so normalising it produces a better font.
 //!
-//! But it produces a font that differs from what FontForge shipped. Measured on
-//! 15 families in a Google Fonts corpus, the source states a deliberate
-//! no-break-space advance and the shipped binary preserves it exactly:
-//!
-//! ```text
-//! family        space   nbsp (source and shipped)
-//! arbutusslab     683   838
-//! boogaloo        242   484        exactly twice the space
-//! courgette       629   601
-//! armata          511   683
-//! ```
-//!
-//! The shipped binaries FAIL `whitespace_widths` and ours PASS -- so applying
-//! this is an improvement over what shipped, and therefore belongs to a later
-//! pass than a conversion whose first goal is equivalence.
-//!
-//! It used to run unconditionally as part of `--add-legacy-duplicate-cmap`,
-//! which meant a reconversion silently diverged from the reference on those 15
-//! families. Split out so the cmap mapping (which restores coverage the
-//! exporter synthesised) can be applied without the width change (which does
-//! not).
+//! But a source may state a deliberate no-break-space advance -- sometimes an
+//! exact multiple of the space -- and the shipped binary preserves it. Applying
+//! this changes such a font, which is why it is a separate opt-in pass rather
+//! than part of `--add-legacy-duplicate-cmap`: the cmap mapping restores
+//! coverage the exporter synthesised, while this changes a stated value.
 
 use crate::filters::FontFilter;
 
@@ -93,9 +77,8 @@ impl FontFilter for NbspWidth {
             .long("normalise-nbsp-width")
             .help(
                 "Set a separate no-break space glyph's advance to the space's. \
-                 A correction, not a faithful conversion: 15 families in a Google \
-                 Fonts corpus state a deliberate no-break-space advance that the \
-                 shipped binary preserves.",
+                 A correction, not a faithful conversion: a source may state a \
+                 deliberate no-break-space advance.",
             )
             .action(clap::ArgAction::SetTrue)
     }

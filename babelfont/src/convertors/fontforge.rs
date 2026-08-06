@@ -687,16 +687,17 @@ impl SfdParser {
                             serde_json::Value::String(v.clone()),
                         );
                     }
-                    let current_fstype = self.font.custom_ot_values.os2_fs_type.unwrap_or(0);
+                    let current_fsselection =
+                        self.font.custom_ot_values.os2_fs_selection.unwrap_or(0);
                     let enabled = value
                         .as_deref()
                         .and_then(|v| v.parse::<u16>().ok())
                         .unwrap_or(1)
                         != 0;
-                    self.font.custom_ot_values.os2_fs_type = Some(if enabled {
-                        current_fstype | 1 << 7
+                    self.font.custom_ot_values.os2_fs_selection = Some(if enabled {
+                        current_fsselection | 1 << 7
                     } else {
-                        current_fstype & !(1 << 7)
+                        current_fsselection & !(1 << 7)
                     });
                 }
                 "OS2_WeightWidthSlopeOnly" => {
@@ -706,16 +707,17 @@ impl SfdParser {
                             serde_json::Value::String(v.clone()),
                         );
                     }
-                    let current_fstype = self.font.custom_ot_values.os2_fs_type.unwrap_or(0);
+                    let current_fsselection =
+                        self.font.custom_ot_values.os2_fs_selection.unwrap_or(0);
                     let enabled = value
                         .as_deref()
                         .and_then(|v| v.parse::<u16>().ok())
                         .unwrap_or(1)
                         != 0;
-                    self.font.custom_ot_values.os2_fs_type = Some(if enabled {
-                        current_fstype | 1 << 8
+                    self.font.custom_ot_values.os2_fs_selection = Some(if enabled {
+                        current_fsselection | 1 << 8
                     } else {
-                        current_fstype & !(1 << 8)
+                        current_fsselection & !(1 << 8)
                     });
                 }
                 "OS2CodePages" => {
@@ -4015,7 +4017,11 @@ fn ot_line_for_key(font: &Font, key: &str) -> Option<String> {
         "OS2_UseTypoMetrics" => {
             if let Some(raw) = font.format_specific.get(key).and_then(|v| v.as_str()) {
                 Some(format!("{}: {}", key, sanitize_unquoted(raw)))
-            } else if ot.os2_fs_type.map(|v| (v & (1 << 7)) != 0).unwrap_or(false) {
+            } else if ot
+                .os2_fs_selection
+                .map(|v| (v & (1 << 7)) != 0)
+                .unwrap_or(false)
+            {
                 Some("OS2_UseTypoMetrics: 1".to_string())
             } else {
                 None
@@ -4024,7 +4030,11 @@ fn ot_line_for_key(font: &Font, key: &str) -> Option<String> {
         "OS2_WeightWidthSlopeOnly" => {
             if let Some(raw) = font.format_specific.get(key).and_then(|v| v.as_str()) {
                 Some(format!("{}: {}", key, sanitize_unquoted(raw)))
-            } else if ot.os2_fs_type.map(|v| (v & (1 << 8)) != 0).unwrap_or(false) {
+            } else if ot
+                .os2_fs_selection
+                .map(|v| (v & (1 << 8)) != 0)
+                .unwrap_or(false)
+            {
                 Some("OS2_WeightWidthSlopeOnly: 1".to_string())
             } else {
                 None
@@ -4923,6 +4933,9 @@ mod tests {
             Some("ltt ".to_string()),
             "a NUL-padded vendor must be re-padded with spaces"
         );
+    }
+
+    #[test]
     fn test_converting_twice_gives_the_same_ids() {
         let sfd = "SplineFontDB: 3.0\nFontName: T\nAscent: 800\nDescent: 200\n\
                    BeginChars: 1 1\nStartChar: .notdef\nEncoding: 0 -1 0\n\

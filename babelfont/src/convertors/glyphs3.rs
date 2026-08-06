@@ -569,8 +569,7 @@ fn save_properties(names: &Names, custom_ot_values: &CustomOTValues) -> Vec<glyp
     // FontLab Studio 5 copied the copyright notice into the description field,
     // and sources built with it -- including the FontForge files derived from
     // them -- still carry it. Emitted, it becomes a name ID 10 holding a
-    // copyright notice, which font QA asks to have removed. The shipped
-    // binaries of the affected families have no name ID 10 at all.
+    // copyright notice.
     if !names
         .description
         .0

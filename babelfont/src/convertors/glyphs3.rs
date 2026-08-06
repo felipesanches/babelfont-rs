@@ -487,14 +487,10 @@ fn load_properties(
 ///
 /// A Glyphs file has no font-level weight class. A compiler takes the value
 /// from the `wght` axis default, and a single-master static font has no axis
-/// to take it from -- so a source that plainly states `TTFWeight: 700` builds
-/// a font declaring 400, and QA reports the bold as having a Regular weight.
-///
-/// Neither an `instances` entry carrying `weightClass` nor a point `wght` axis
-/// fixes it; both were measured. The axis collapses because a single master
-/// gives it no range, and the instance's weight class is only ever consulted
-/// to build that axis mapping. `table OS/2 { WeightClass ...; }` is applied
-/// directly and does work.
+/// to take it from. An `instances` entry carrying `weightClass` does not
+/// reach the font either -- it is only consulted to build the axis mapping --
+/// and a point `wght` axis collapses for the same single-master reason.
+/// `table OS/2 { WeightClass ...; }` is applied directly.
 ///
 /// A source that already declares its own `table OS/2` block keeps it -- that
 /// is a deliberate statement, and two of them would not compile.

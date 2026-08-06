@@ -521,9 +521,7 @@ fn save_properties(names: &Names, custom_ot_values: &CustomOTValues) -> Vec<glyp
 
     push_localized!(names.copyright, glyphs3::LocalizedPropertyKey::Copyrights);
 
-    // Always the localized form. Glyphs 3 allows a singular `designer` too, but
-    // fontc only maps `designers`, and on an unrecognised key it warns and drops
-    // the value -- so a single-language designer silently loses name ID 9.
+    // Glyphs 3 always emits the localized form.
     push_localized!(names.designer, glyphs3::LocalizedPropertyKey::Designers);
 
     push_singular!(
@@ -543,8 +541,7 @@ fn save_properties(names: &Names, custom_ot_values: &CustomOTValues) -> Vec<glyp
     push_localized!(names.license, glyphs3::LocalizedPropertyKey::Licenses);
     push_singular!(names.license_url, glyphs3::SingularPropertyKey::LicenseUrl);
 
-    // Localized form for the same reason as `designers` above: fontc only maps
-    // `manufacturers`, so the singular key loses name ID 8.
+    // Glyphs 3 always emits the localized form.
     push_localized!(
         names.manufacturer,
         glyphs3::LocalizedPropertyKey::Manufacturers

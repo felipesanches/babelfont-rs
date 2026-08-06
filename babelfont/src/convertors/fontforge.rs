@@ -908,16 +908,12 @@ impl SfdParser {
 
         // Prefer the style the PostScript name states, when it states one.
         //
-        // Deriving the master name from the weight class alone loses the slope:
-        // an SFD whose FontName is "CreteRound-Italic" has Weight "Book", so the
-        // weight-derived name is "Regular" and the built italic declares
-        // subfamily Regular. Font QA rejects that -- "Name ID 2 does not conform
-        // to specs. Only R/I/B/BI are allowed, found Regular".
-        //
-        // ItalicAngle is not a usable signal here: of five italic families in a
-        // Google Fonts corpus, four declare ItalicAngle 0. Nor is OS2StyleMap or
-        // MacStyle, which those files leave empty. The PostScript name is the
-        // only field that distinguishes the italic from its regular sibling.
+        // Deriving the master name from the weight class alone loses the
+        // slope: an italic SFD may state Weight "Book", so the weight-derived
+        // name is "Regular". ItalicAngle, OS2StyleMap and MacStyle are
+        // commonly zero or empty in such sources, so the PostScript name
+        // ("CreteRound-Italic") is the only field that distinguishes the
+        // italic from its regular sibling.
         let style_from_font_name = self
             .font
             .names
@@ -930,11 +926,10 @@ impl SfdParser {
 
         // A family named after its own weight is one family, not two.
         //
-        // "Elsie Black" is authored as a family in its own right whose sole
-        // style is Regular: FamilyName is "Elsie Black", FontName is
-        // "ElsieBlack-Regular", and Weight is "Black". Taken at face value the
-        // built font declares usWeightClass 900 with subfamily Regular, which
-        // is internally inconsistent -- QA reads the subfamily and expects 400.
+        // A source may be authored as FamilyName "Elsie Black" / FontName
+        // "ElsieBlack-Regular" / Weight "Black" -- taken at face value that
+        // declares usWeightClass 900 with subfamily Regular, which is
+        // internally inconsistent.
         //
         // Splitting the weight off gives family "Elsie" with style "Black",
         // which is how the same design is modelled in a Glyphs source, and

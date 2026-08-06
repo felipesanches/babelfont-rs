@@ -28,8 +28,7 @@ pub fn decode_utf7(s: &str) -> String {
                 // The base64 payload is UTF-16BE, not UTF-8. Decoding it as
                 // UTF-8 happens to "work" for ASCII -- "This" encodes to
                 // 00 54 00 68 00 69 00 73, which IS valid UTF-8 -- but every
-                // character arrives preceded by a NUL. Those NULs then travel
-                // all the way into the built font's name table.
+                // character arrives preceded by a NUL.
                 for unit in char::decode_utf16(decode_modified_base64(&b64)) {
                     result.push(unit.unwrap_or(char::REPLACEMENT_CHARACTER));
                 }
@@ -166,9 +165,8 @@ mod tests {
 
     #[test]
     fn payload_is_utf16_not_utf8() {
-        // The bug this exists for. "This" as UTF-16BE is 00 54 00 68 00 69 00 73,
-        // which is *valid UTF-8* -- so the old decoder produced "\0T\0h\0i\0s"
-        // and those NULs reached the built font's name table.
+        // "This" as UTF-16BE is 00 54 00 68 00 69 00 73, which is *valid
+        // UTF-8* -- a UTF-8 decode yields "\0T\0h\0i\0s".
         let decoded = decode_utf7("+AFQAaABpAHM-");
         assert_eq!(decoded, "This");
         assert!(
@@ -181,7 +179,7 @@ mod tests {
     fn short_trailing_group_is_not_discarded() {
         // Four base64 characters = 24 bits = one code unit plus 8 bits of
         // padding. Reading in fixed 4-character chunks and skipping the
-        // remainder used to lose these.
+        // remainder would lose these.
         assert_eq!(decode_utf7("+AA0A-"), "\r");
         // Three characters = 18 bits = one code unit plus 2 bits of padding.
         assert_eq!(decode_utf7("+AGE-"), "a");
@@ -189,7 +187,7 @@ mod tests {
 
     #[test]
     fn real_corpus_strings() {
-        // librefonts/corben's LangName, which produced "Corben.\n\n\0This..."
+        // librefonts/corben's LangName.
         assert_eq!(decode_utf7("Corben.+AAoACgAA-This"), "Corben.\n\n\u{0}This");
         // librefonts/aguafinascript's OFL description, CR-separated.
         assert_eq!(decode_utf7("License,+AA0A-Version"), "License,\rVersion");

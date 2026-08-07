@@ -140,6 +140,7 @@ declare_filters! {
     }
     group "General font filters" {
         DropCopyrightDescription(dropcopyrightdescription) => "dropcopyrightdescription",
+        SingleLineNames(singlelinenames) => "singlelinenames",
         RewriteSmartAxes(rewritesmartaxes) => "rewritesmartaxes",
         ScaleUpem(scaleupem) => "scaleupem",
         RenameGlyphs(renameglyphs) => "renameglyphs",

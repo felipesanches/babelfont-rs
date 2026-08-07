@@ -117,6 +117,7 @@ declare_filters! {
         CubicToQuadratic(cubic2quadratic) => "cubic2quadratic",
         QuadraticToCubic(quadratic2cubic) => "quadratic2cubic",
         CleanupPaths(cleanuppaths) => "cleanuppaths",
+        CorrectPathDirection(correctpathdirection) => "correctpathdirection",
         MakeCompatible(makecompatible) => "makecompatible",
         Recompose(recomposition) => "recompose",
     }
@@ -132,6 +133,8 @@ declare_filters! {
     }
     group "Filters for manipulating feature code" {
         ResolveIncludes(resolveincludes) => "resolveincludes",
+        LegacyDuplicateCmap(legacyduplicatecmap) => "legacyduplicatecmap",
+        NbspWidth(nbspwidth) => "nbspwidth",
         SubsetLayout(subsetlayout) => "subsetlayout",
         MoveKerningFromFeatures(movekerningfromfeatures) => "movekerningfromfeatures",
     }

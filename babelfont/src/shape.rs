@@ -5,10 +5,18 @@ use crate::{
 use fontdrasil::coords::DesignCoord;
 use indexmap::IndexMap;
 use itertools::Itertools as _;
-use kurbo::PathEl;
+use kurbo::{PathEl, Shape as _};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 use typeshare::typeshare;
+
+/// An owned snapshot of a resolved layer's paths and components,
+/// used for component decomposition.
+#[derive(Debug, Clone)]
+pub struct ResolvedShapes {
+    pub paths: Vec<Path>,
+    pub components: Vec<Component>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[typeshare]
@@ -45,6 +53,51 @@ pub struct Component {
 }
 
 impl Component {
+    /// Decompose this component into paths, recursively resolving nested components.
+    ///
+    /// `resolve` is called with a glyph name and a layer ID and should return the
+    /// paths and components of the resolved glyph layer.
+    pub fn decompose(
+        &self,
+        layer_id: Option<&str>,
+        mut resolve: impl FnMut(&str, Option<&str>) -> Option<ResolvedShapes>,
+    ) -> Vec<Path> {
+        let mut contours = Vec::new();
+        let mut stack: Vec<(Component, kurbo::Affine)> = Vec::new();
+        stack.push((self.clone(), self.transform.as_affine()));
+
+        while let Some((component, transform)) = stack.pop() {
+            let resolved = match resolve(&component.reference, layer_id) {
+                Some(r) => r,
+                None => continue,
+            };
+
+            for contour in &resolved.paths {
+                let mut decomposed_contour = Path::default();
+                for node in &contour.nodes {
+                    let new_point = transform * kurbo::Point::new(node.x, node.y);
+                    decomposed_contour.nodes.push(Node {
+                        x: new_point.x,
+                        y: new_point.y,
+                        nodetype: node.nodetype,
+                        smooth: node.smooth,
+                        format_specific: node.format_specific.clone(),
+                    });
+                }
+                decomposed_contour.closed = contour.closed;
+                contours.push(decomposed_contour);
+            }
+
+            // Depth-first: push nested components reversed so the first is processed next
+            for new_component in resolved.components.into_iter().rev() {
+                let new_transform: kurbo::Affine = new_component.transform.as_affine();
+                stack.push((new_component, transform * new_transform));
+            }
+        }
+
+        contours
+    }
+
     // component_layer?
     // pos / angle / scale
 }
@@ -196,6 +249,51 @@ impl Path {
             self.nodes[node_ix].smooth = smooth;
         }
     }
+
+    /// Return the control point bounding box of the path as a kurbo::Rect
+    pub fn control_box(&self) -> Option<kurbo::Rect> {
+        self.nodes.iter().fold(None, |acc, node| {
+            let point = kurbo::Point::new(node.x, node.y);
+            match acc {
+                Some(rect) => Some(rect.union_pt(point)),
+                None => Some(kurbo::Rect::from_points(point, point)),
+            }
+        })
+    }
+
+    /// Reverse the direction a closed path is drawn in, in place.
+    pub fn reverse(&mut self) {
+        if !self.closed || self.nodes.is_empty() {
+            return;
+        }
+
+        self.nodes.reverse();
+
+        let on_curve: Vec<usize> = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| n.nodetype != NodeType::OffCurve)
+            .map(|(ix, _)| ix)
+            .collect();
+
+        if !on_curve.is_empty() {
+            let old_types: Vec<NodeType> =
+                on_curve.iter().map(|&ix| self.nodes[ix].nodetype).collect();
+            for (slot, &ix) in on_curve.iter().enumerate() {
+                self.nodes[ix].nodetype = old_types[(slot + old_types.len() - 1) % old_types.len()];
+            }
+        }
+
+        self.rotate_to_preferred_representation();
+    }
+
+    /// The signed area enclosed by a closed path.
+    ///
+    /// Positive is counter-clockwise, in the y-up coordinate system fonts use.
+    pub fn signed_area(&self) -> Result<f64, BabelfontError> {
+        Ok(self.to_kurbo()?.area())
+    }
 }
 
 fn is_contiguous(prev: &Node, node: &Node, next: &Node) -> bool {
@@ -280,6 +378,14 @@ impl Shape {
 
     /// If this shape is a component, return it. Otherwise, return None.
     pub fn as_component(&self) -> Option<&Component> {
+        match self {
+            Shape::Component(c) => Some(c),
+            Shape::Path(_) => None,
+        }
+    }
+
+    /// If this shape is a component, return a mutable reference to it. Otherwise, return None.
+    pub fn as_component_mut(&mut self) -> Option<&mut Component> {
         match self {
             Shape::Component(c) => Some(c),
             Shape::Path(_) => None,
@@ -626,7 +732,7 @@ mod fontra {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use kurbo::PathEl;
 
     use super::*;
@@ -830,5 +936,168 @@ mod tests {
                 ix, a.smooth, b.smooth
             );
         }
+    }
+
+    /// A closed square, drawn counter-clockwise, with straight sides.
+    fn ccw_square() -> Path {
+        Path {
+            nodes: vec![
+                Node::new_line(0.0, 0.0),
+                Node::new_line(100.0, 0.0),
+                Node::new_line(100.0, 100.0),
+                Node::new_line(0.0, 100.0),
+            ],
+            closed: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn signed_area_sign_matches_direction() {
+        let ccw = ccw_square();
+        assert!(ccw.signed_area().unwrap() > 0.0);
+
+        let mut cw = ccw_square();
+        cw.reverse();
+        assert!(cw.signed_area().unwrap() < 0.0);
+    }
+
+    #[test]
+    fn reversing_twice_is_the_identity() {
+        let original = ccw_square();
+        let mut roundtripped = ccw_square();
+        roundtripped.reverse();
+        roundtripped.reverse();
+
+        let area_before = original.signed_area().unwrap();
+        let area_after = roundtripped.signed_area().unwrap();
+        assert!((area_before - area_after).abs() < 1e-9);
+
+        let points_before: Vec<(f64, f64)> = original.nodes.iter().map(|n| (n.x, n.y)).collect();
+        let points_after: Vec<(f64, f64)> = roundtripped.nodes.iter().map(|n| (n.x, n.y)).collect();
+        assert_eq!(points_before.len(), points_after.len());
+        // The starting point may rotate, but the cycle must be the same.
+        assert!(points_after
+            .iter()
+            .cycle()
+            .take(points_after.len() * 2)
+            .collect::<Vec<_>>()
+            .windows(points_before.len())
+            .any(|w| w.iter().copied().copied().collect::<Vec<_>>() == points_before));
+    }
+
+    #[test]
+    fn reversal_preserves_mixed_line_and_curve_segments() {
+        // A shape with one cubic side and one straight side. Reversing it must
+        // keep exactly one cubic segment: the type has to travel with the
+        // segment, not stay on the node.
+        let mut path = Path {
+            nodes: vec![
+                Node::new_line(0.0, 0.0),
+                Node::new_offcurve(30.0, 60.0),
+                Node::new_offcurve(70.0, 60.0),
+                Node::new_curve(100.0, 0.0),
+            ],
+            closed: true,
+            ..Default::default()
+        };
+        let area_before = path.signed_area().unwrap();
+
+        path.reverse();
+
+        // Still one cubic and one line, and still a valid path.
+        assert_eq!(
+            path.nodes
+                .iter()
+                .filter(|n| n.nodetype == NodeType::OffCurve)
+                .count(),
+            2
+        );
+        assert_eq!(
+            path.nodes
+                .iter()
+                .filter(|n| n.nodetype == NodeType::Curve)
+                .count(),
+            1
+        );
+        assert_eq!(
+            path.nodes
+                .iter()
+                .filter(|n| n.nodetype == NodeType::Line)
+                .count(),
+            1
+        );
+
+        // Same shape, opposite direction.
+        let area_after = path.signed_area().unwrap();
+        assert!((area_before + area_after).abs() < 1e-6);
+    }
+
+    /// Three on-curve nodes, three different segment kinds, and off-curve runs of
+    /// three different lengths. Every segment kind must stay attached to its own
+    /// segment, which means each on-curve node's off-curve run has to come out
+    /// the right length for its new type.
+    ///
+    /// A contour with only two on-curve nodes cannot catch a swapped shift
+    /// direction, because its successor and predecessor are the same node.
+    #[test]
+    fn reversal_keeps_segment_kinds_with_their_segments() {
+        // A (line) -> B via cubic, B -> C via quadratic, C -> A via line.
+        let mut path = Path {
+            nodes: vec![
+                Node::new_line(0.0, 0.0),
+                Node::new_offcurve(10.0, 40.0),
+                Node::new_offcurve(40.0, 60.0),
+                Node::new_curve(60.0, 60.0),
+                Node::new_offcurve(90.0, 30.0),
+                Node::new_qcurve(90.0, 0.0),
+            ],
+            closed: true,
+            ..Default::default()
+        };
+        let area_before = path.signed_area().unwrap();
+
+        path.reverse();
+
+        // to_kurbo is the real consistency check: it errors if an on-curve node's
+        // type disagrees with the number of off-curves in front of it, which is
+        // exactly the corruption a wrong shift direction produces.
+        let kurbo = path.to_kurbo().expect("reversed path must be well-formed");
+        assert!(!kurbo.elements().is_empty());
+
+        // One of each segment kind survives.
+        for kind in [NodeType::Line, NodeType::Curve, NodeType::QCurve] {
+            assert_eq!(
+                path.nodes.iter().filter(|n| n.nodetype == kind).count(),
+                1,
+                "expected exactly one {kind:?} node after reversal"
+            );
+        }
+        assert_eq!(
+            path.nodes
+                .iter()
+                .filter(|n| n.nodetype == NodeType::OffCurve)
+                .count(),
+            3
+        );
+
+        // Same shape, opposite direction.
+        let area_after = path.signed_area().unwrap();
+        assert!(
+            (area_before + area_after).abs() < 1e-6,
+            "area {area_before} -> {area_after}"
+        );
+    }
+
+    #[test]
+    fn open_paths_are_left_alone() {
+        let mut path = Path {
+            nodes: vec![Node::new_move(0.0, 0.0), Node::new_line(100.0, 0.0)],
+            closed: false,
+            ..Default::default()
+        };
+        let before = path.clone();
+        path.reverse();
+        assert_eq!(before, path);
     }
 }

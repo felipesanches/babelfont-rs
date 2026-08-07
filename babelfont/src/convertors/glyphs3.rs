@@ -353,7 +353,8 @@ fn load_instance(font: &Font, instance: &glyphs3::Instance) -> crate::Instance {
 fn save_instance(
     instance: &crate::Instance,
     axes: &[Axis],
-    font_classes: (Option<i32>, Option<i32>),
+    weight_class: Option<i32>,
+    width_class: Option<i32>,
 ) -> glyphs3::Instance {
     let mut axes_values = vec![];
     if !instance.variable {
@@ -384,12 +385,12 @@ fn save_instance(
             .get(KEY_WEIGHT_CLASS)
             .and_then(|x| x.as_i64())
             .map(|x| x as i32)
-            .or(font_classes.0),
+            .or(weight_class),
         width_class: format_specific
             .get(KEY_WIDTH_CLASS)
             .and_then(|x| x.as_i64())
             .map(|x| x as i32)
-            .or(font_classes.1),
+            .or(width_class),
         exports: format_specific
             .get(KEY_INSTANCE_EXPORTS)
             .and_then(|x| x.as_bool())
@@ -1113,10 +1114,8 @@ pub(crate) fn as_glyphs3(font: &Font) -> Result<glyphs3::Glyphs3, BabelfontError
                 save_instance(
                     x,
                     &font.axes,
-                    (
-                        font.custom_ot_values.os2_us_weight_class.map(|w| w as i32),
-                        font.custom_ot_values.os2_us_width_class.map(|w| w as i32),
-                    ),
+                    font.custom_ot_values.os2_us_weight_class.map(|w| w as i32),
+                    font.custom_ot_values.os2_us_width_class.map(|w| w as i32),
                 )
             })
             .collect(),

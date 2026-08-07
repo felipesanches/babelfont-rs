@@ -16,29 +16,6 @@ use crate::BabelfontError;
 pub use formatspecific::FormatSpecific;
 pub use otvalue::CustomOTValues;
 
-/// Flatten a string so it can be stored in a `name` record.
-///
-/// Name records are single-line. Sources routinely carry hard line breaks in
-/// the license description and copyright -- an SFD encodes them in the
-/// `LangName` line, FontLab stores them with carriage returns -- and passing
-/// those through produces a font that fails QA and renders the break as a
-/// stray glyph in some tools.
-///
-/// Any run of line breaks, with the whitespace around it, becomes one space.
-pub(crate) fn single_line(value: &str) -> String {
-    value
-        .split(['\r', '\n'])
-        // A name record cannot carry a control character at all. Line breaks
-        // become the join below; anything else in C0 (NUL especially) is
-        // simply removed. Real licence text does encode NUL: an SFD LangName
-        // `+AA0ACgAA-` run is CR, LF, NUL.
-        .map(|part| part.chars().filter(|c| !c.is_control()).collect::<String>())
-        .map(|part| part.trim().to_string())
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 pub(crate) fn tag_from_string(s: &str) -> Result<Tag, BabelfontError> {
     if s.len() > 4 {
         return Err(BabelfontError::General(format!(
@@ -143,54 +120,5 @@ impl FromStr for Direction {
                 s
             ))),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_single_line() {
-        // The case this exists for: an OFL description with hard breaks. An
-        // SFD encodes these as carriage returns in its LangName line.
-        assert_eq!(
-            single_line(
-                "This Font Software is licensed under the SIL Open Font License,\rVersion 1.1."
-            ),
-            "This Font Software is licensed under the SIL Open Font License, Version 1.1."
-        );
-
-        // Every flavour of break, and runs of them, collapse to one space.
-        assert_eq!(single_line("a\nb"), "a b");
-        assert_eq!(single_line("a\r\nb"), "a b");
-        assert_eq!(single_line("a\n\n\nb"), "a b");
-
-        // Whitespace around a break is absorbed rather than doubled up.
-        assert_eq!(single_line("a  \n  b"), "a b");
-
-        // Leading and trailing breaks leave no stray space.
-        assert_eq!(single_line("\na\n"), "a");
-
-        // A string with no break is returned unchanged, including interior
-        // spacing, which is not ours to normalise.
-        assert_eq!(single_line("a  b"), "a  b");
-        assert_eq!(single_line(""), "");
-
-        // A control character can never appear in a name record. NUL is the
-        // one that actually occurs in licence text.
-        assert_eq!(single_line("a\u{0}b"), "ab");
-        assert_eq!(
-            single_line("---\r\n\u{0}SIL OPEN FONT"),
-            "--- SIL OPEN FONT"
-        );
-        assert_eq!(single_line("\u{0}"), "");
-        assert_eq!(single_line("a\u{7}\u{1b}b"), "ab");
-        // A part that is only control characters must not leave a stray space.
-        assert_eq!(single_line("a\n\u{0}\nb"), "a b");
-
-        // Idempotent: flattening an already-flat string changes nothing.
-        let once = single_line("a\nb\nc");
-        assert_eq!(single_line(&once), once);
     }
 }

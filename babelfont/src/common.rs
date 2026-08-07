@@ -16,32 +16,6 @@ use crate::BabelfontError;
 pub use formatspecific::FormatSpecific;
 pub use otvalue::CustomOTValues;
 
-/// Normalise a version string to the "Version X.Y" form the OpenType spec
-/// recommends and Google Fonts requires.
-///
-/// Sources commonly store a bare number ("1.002"), which reaches name ID 5
-/// unchanged and fails QA. A value that does not look like a version number is
-/// passed through untouched rather than mislabelled as one.
-pub(crate) fn normalise_version_string(value: &str) -> Option<String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    if trimmed.starts_with("Version ") {
-        return Some(trimmed.to_string());
-    }
-    let rest = trimmed.trim_start_matches(|c: char| c.is_ascii_alphabetic() || c == ' ');
-    // The number may be followed by more text, and usually is -- FontForge
-    // writes the ttfautohint invocation into the same field:
-    //   "1.001; ttfautohint (v0.92) -l 10 -r 16 -G 200 -x 7 -w \"GD\""
-    // Requiring the whole value to be numeric would leave those unprefixed.
-    let (number, suffix) = split_leading_version_number(rest);
-    if number.is_empty() {
-        return Some(trimmed.to_string());
-    }
-    Some(format!("Version {number}{suffix}"))
-}
-
 /// Split off the leading `1.002`-shaped number, returning it and whatever
 /// trails it verbatim.
 ///
@@ -201,29 +175,7 @@ impl FromStr for Direction {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 #[cfg(test)]
 mod version_tests {
-    use super::{normalise_version_string, version_major_minor};
-
-    #[test]
-    fn bare_numbers_get_the_required_prefix() {
-        assert_eq!(
-            normalise_version_string("1.002").as_deref(),
-            Some("Version 1.002")
-        );
-        assert_eq!(
-            normalise_version_string("Version 2.320").as_deref(),
-            Some("Version 2.320")
-        );
-        assert_eq!(
-            normalise_version_string(" 001.001 ").as_deref(),
-            Some("Version 001.001")
-        );
-        assert_eq!(normalise_version_string(""), None);
-        // Not a version number: passed through, not mislabelled.
-        assert_eq!(
-            normalise_version_string("built by hand").as_deref(),
-            Some("built by hand")
-        );
-    }
+    use super::version_major_minor;
 
     #[test]
     fn the_minor_is_digits_not_a_float_fraction() {
@@ -250,46 +202,16 @@ mod version_tests {
     }
 
     #[test]
-    fn text_after_the_number_is_kept_but_not_parsed() {
-        // What FontForge actually writes: the ttfautohint invocation lives in
-        // the same field. The shipped binaries carry it too, so it is kept --
-        // only the prefix is added.
+    fn text_after_the_number_is_not_parsed_as_part_of_it() {
+        // FontForge writes the ttfautohint invocation into the same field.
         let hinted = "1.001; ttfautohint (v0.92) -l 10 -r 16 -G 200 -x 7 -w \"GD\"";
-        assert_eq!(
-            normalise_version_string(hinted).as_deref(),
-            Some("Version 1.001; ttfautohint (v0.92) -l 10 -r 16 -G 200 -x 7 -w \"GD\"")
-        );
         assert_eq!(version_major_minor(hinted), Some((1, 1)));
-
-        // A trailing year is another common suffix.
-        assert_eq!(
-            normalise_version_string("1.002 2010").as_deref(),
-            Some("Version 1.002 2010")
-        );
         assert_eq!(version_major_minor("1.002 2010"), Some((1, 2)));
-
-        // Already prefixed and carrying a suffix: left exactly as it is.
-        assert_eq!(
-            normalise_version_string("Version 1.001; ttfautohint").as_deref(),
-            Some("Version 1.001; ttfautohint")
-        );
         assert_eq!(
             version_major_minor("Version 1.001; ttfautohint"),
             Some((1, 1))
         );
-
         // A trailing dot belongs to the text, not the number.
         assert_eq!(version_major_minor("1.002. Released 2010"), Some((1, 2)));
-        assert_eq!(
-            normalise_version_string("1.").as_deref(),
-            Some("Version 1.")
-        );
-
-        // Still no number, still passed through untouched.
-        assert_eq!(
-            normalise_version_string("built by hand; 2010").as_deref(),
-            Some("built by hand; 2010")
-        );
-        assert_eq!(version_major_minor("built by hand; 2010"), None);
     }
 }

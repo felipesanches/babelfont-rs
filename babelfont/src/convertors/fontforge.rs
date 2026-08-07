@@ -570,11 +570,13 @@ impl SfdParser {
                 }
                 "Version" => {
                     if let Some(v) = &value {
-                        // name ID 5 wants "Version X.Y"; the SFD stores a bare
-                        // number, which fails QA if passed through.
-                        if let Some(normalised) = crate::common::normalise_version_string(v) {
-                            self.font.names.version = normalised.into();
-                        }
+                        // FontForge's export composes name ID 5 as "Version "
+                        // plus this field: across 120 SFD/shipped-binary pairs
+                        // no SFD field contains the word and 114 binaries carry
+                        // exactly that composition. Interpret it the same way,
+                        // whatever the contents. `version_line` strips the
+                        // prefix again on write, so an SFD round trip is stable.
+                        self.font.names.version = format!("Version {v}").into();
                         // head.fontRevision must agree with name ID 5. The minor
                         // is the fractional digits padded to three, not a float
                         // fraction scaled by 100 -- that turned 1.002 into 1.000.

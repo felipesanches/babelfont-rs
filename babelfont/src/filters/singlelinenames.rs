@@ -47,32 +47,7 @@ fn flatten(dict: &mut I18NDictionary) {
 
 impl FontFilter for SingleLineNames {
     fn apply(&self, font: &mut crate::Font) -> Result<(), crate::BabelfontError> {
-        let names = &mut font.names;
-        for dict in [
-            &mut names.copyright,
-            &mut names.family_name,
-            &mut names.preferred_subfamily_name,
-            &mut names.unique_id,
-            &mut names.full_name,
-            &mut names.version,
-            &mut names.postscript_name,
-            &mut names.trademark,
-            &mut names.manufacturer,
-            &mut names.designer,
-            &mut names.description,
-            &mut names.manufacturer_url,
-            &mut names.designer_url,
-            &mut names.license,
-            &mut names.license_url,
-            &mut names.typographic_family,
-            &mut names.typographic_subfamily,
-            &mut names.compatible_full_name,
-            &mut names.sample_text,
-            &mut names.postscript_cid_name,
-            &mut names.wws_family_name,
-            &mut names.wws_subfamily_name,
-            &mut names.variations_postscript_name_prefix,
-        ] {
+        for (_nameid, dict) in font.names.iter_mut() {
             flatten(dict);
         }
         Ok(())

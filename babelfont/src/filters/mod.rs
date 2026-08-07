@@ -133,10 +133,13 @@ declare_filters! {
     }
     group "Filters for manipulating feature code" {
         ResolveIncludes(resolveincludes) => "resolveincludes",
+        LegacyDuplicateCmap(legacyduplicatecmap) => "legacyduplicatecmap",
+        NbspWidth(nbspwidth) => "nbspwidth",
         SubsetLayout(subsetlayout) => "subsetlayout",
         MoveKerningFromFeatures(movekerningfromfeatures) => "movekerningfromfeatures",
     }
     group "General font filters" {
+        SingleLineNames(singlelinenames) => "singlelinenames",
         RewriteSmartAxes(rewritesmartaxes) => "rewritesmartaxes",
         ScaleUpem(scaleupem) => "scaleupem",
         RenameGlyphs(renameglyphs) => "renameglyphs",

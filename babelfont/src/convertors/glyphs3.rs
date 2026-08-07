@@ -350,7 +350,11 @@ fn load_instance(font: &Font, instance: &glyphs3::Instance) -> crate::Instance {
     }
 }
 
-fn save_instance(instance: &crate::Instance, axes: &[Axis]) -> glyphs3::Instance {
+fn save_instance(
+    instance: &crate::Instance,
+    axes: &[Axis],
+    font_classes: (Option<i32>, Option<i32>),
+) -> glyphs3::Instance {
     let mut axes_values = vec![];
     if !instance.variable {
         for axis in axes {
@@ -372,14 +376,20 @@ fn save_instance(instance: &crate::Instance, axes: &[Axis]) -> glyphs3::Instance
             .map(|x| x.to_string())
             .unwrap_or_default(),
         axes_values,
+        // An instance's own weightClass/widthClass wins; otherwise the
+        // font-level OS/2 classes the source stated (custom_ot_values) are
+        // serialized here, because the instance field is where the Glyphs
+        // format carries them.
         weight_class: format_specific
             .get(KEY_WEIGHT_CLASS)
             .and_then(|x| x.as_i64())
-            .map(|x| x as i32),
+            .map(|x| x as i32)
+            .or(font_classes.0),
         width_class: format_specific
             .get(KEY_WIDTH_CLASS)
             .and_then(|x| x.as_i64())
-            .map(|x| x as i32),
+            .map(|x| x as i32)
+            .or(font_classes.1),
         exports: format_specific
             .get(KEY_INSTANCE_EXPORTS)
             .and_then(|x| x.as_bool())
@@ -482,61 +492,6 @@ fn load_properties(
     }
 }
 
-/// Carry `usWeightClass` and `usWidthClass` across as FEA, the only route a
-/// static Glyphs source has to them.
-///
-/// A Glyphs file has no font-level weight class. A compiler takes the value
-/// from the `wght` axis default, and a single-master static font has no axis
-/// to take it from. An `instances` entry carrying `weightClass` does not
-/// reach the font either -- it is only consulted to build the axis mapping --
-/// and a point `wght` axis collapses for the same single-master reason.
-/// `table OS/2 { WeightClass ...; }` is applied directly.
-///
-/// A source that already declares its own `table OS/2` block keeps it -- that
-/// is a deliberate statement, and two of them would not compile.
-fn os2_classes_prefix(
-    font: &Font,
-    existing: &[glyphslib::common::FeaturePrefix],
-) -> Option<glyphslib::common::FeaturePrefix> {
-    let ot = &font.custom_ot_values;
-    let weight = ot.os2_us_weight_class;
-    let width = ot.os2_us_width_class;
-    if weight.is_none() && width.is_none() {
-        return None;
-    }
-
-    let declares_os2 = |code: &str| {
-        code.split("table ")
-            .skip(1)
-            .any(|rest| rest.trim_start().starts_with("OS/2"))
-    };
-    if existing.iter().any(|p| declares_os2(&p.code))
-        || font
-            .features
-            .features
-            .iter()
-            .any(|(_, code)| declares_os2(&code.code))
-    {
-        return None;
-    }
-
-    let mut body = String::new();
-    if let Some(weight) = weight {
-        body.push_str(&format!("WeightClass {weight};\n"));
-    }
-    if let Some(width) = width {
-        body.push_str(&format!("WidthClass {width};\n"));
-    }
-
-    Some(glyphslib::common::FeaturePrefix {
-        code: format!("table OS/2 {{\n{body}}} OS/2;"),
-        automatic: false,
-        disabled: false,
-        notes: None,
-        name: "OS/2".to_string(),
-    })
-}
-
 fn save_properties(names: &Names, custom_ot_values: &CustomOTValues) -> Vec<glyphs3::Property> {
     let mut properties: Vec<glyphs3::Property> = vec![];
 
@@ -548,35 +503,6 @@ fn save_properties(names: &Names, custom_ot_values: &CustomOTValues) -> Vec<glyp
                     key: $key,
                     value: value.clone(),
                 });
-            }
-        };
-    }
-
-    // Macro for properties that can be singular or localized
-    macro_rules! push_property {
-        ($field:expr, $singular_key:expr, $localized_key:expr) => {
-            if !$field.is_empty() {
-                if $field.is_single() {
-                    if let Some(value) = $field.get_default() {
-                        properties.push(glyphs3::Property::SingularProperty {
-                            key: $singular_key,
-                            value: value.clone(),
-                        });
-                    }
-                } else {
-                    let values: Vec<glyphslib::glyphs3::LocalizedValue> = $field
-                        .0
-                        .iter()
-                        .map(|(language, value)| glyphslib::glyphs3::LocalizedValue {
-                            language: language.clone(),
-                            value: value.clone(),
-                        })
-                        .collect();
-                    properties.push(glyphs3::Property::LocalizedProperty {
-                        key: $localized_key,
-                        values,
-                    });
-                }
             }
         };
     }
@@ -605,11 +531,8 @@ fn save_properties(names: &Names, custom_ot_values: &CustomOTValues) -> Vec<glyp
 
     push_localized!(names.copyright, glyphs3::LocalizedPropertyKey::Copyrights);
 
-    push_property!(
-        names.designer,
-        glyphs3::SingularPropertyKey::Designer,
-        glyphs3::LocalizedPropertyKey::Designers
-    );
+    // Glyphs 3 always emits the localized form.
+    push_localized!(names.designer, glyphs3::LocalizedPropertyKey::Designers);
 
     push_singular!(
         names.designer_url,
@@ -628,9 +551,9 @@ fn save_properties(names: &Names, custom_ot_values: &CustomOTValues) -> Vec<glyp
     push_localized!(names.license, glyphs3::LocalizedPropertyKey::Licenses);
     push_singular!(names.license_url, glyphs3::SingularPropertyKey::LicenseUrl);
 
-    push_property!(
+    // Glyphs 3 always emits the localized form.
+    push_localized!(
         names.manufacturer,
-        glyphs3::SingularPropertyKey::Manufacturer,
         glyphs3::LocalizedPropertyKey::Manufacturers
     );
 
@@ -1058,15 +981,12 @@ pub(crate) fn as_glyphs3(font: &Font) -> Result<glyphs3::Glyphs3, BabelfontError
         .iter()
         .map(|(name, members)| members.to_featureclass(name))
         .collect();
-    let mut feature_prefixes: Vec<glyphslib::common::FeaturePrefix> = font
+    let feature_prefixes = font
         .features
         .prefixes
         .iter()
         .map(|(name, code)| code.to_featureprefix(name))
         .collect();
-    if let Some(prefix) = os2_classes_prefix(&font, &feature_prefixes) {
-        feature_prefixes.push(prefix);
-    }
     let features = font
         .features
         .features
@@ -1189,7 +1109,16 @@ pub(crate) fn as_glyphs3(font: &Font) -> Result<glyphs3::Glyphs3, BabelfontError
         instances: font
             .instances
             .iter()
-            .map(|x| save_instance(x, &font.axes))
+            .map(|x| {
+                save_instance(
+                    x,
+                    &font.axes,
+                    (
+                        font.custom_ot_values.os2_us_weight_class.map(|w| w as i32),
+                        font.custom_ot_values.os2_us_width_class.map(|w| w as i32),
+                    ),
+                )
+            })
             .collect(),
         kerning,
         kerning_rtl: font
@@ -1303,6 +1232,34 @@ fn save_master(
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn font_level_os2_classes_reach_the_exported_instance() {
+        // The Glyphs format carries usWeightClass/usWidthClass on instances.
+        // A font-level value read from another format (custom_ot_values) is
+        // serialized there, unless the instance states its own.
+        let mut font = crate::Font::new();
+        font.custom_ot_values.os2_us_weight_class = Some(700);
+        font.custom_ot_values.os2_us_width_class = Some(3);
+        let mut inst = crate::Instance::default();
+        inst.name.set_default("Bold".to_string());
+        font.instances.push(inst);
+        let g = super::as_glyphs3(&font).unwrap();
+        assert_eq!(g.instances[0].weight_class, Some(700));
+        assert_eq!(g.instances[0].width_class, Some(3));
+
+        // An instance's own value wins over the font level.
+        let mut font2 = crate::Font::new();
+        font2.custom_ot_values.os2_us_weight_class = Some(700);
+        let mut inst2 = crate::Instance::default();
+        inst2.name.set_default("Own".to_string());
+        inst2
+            .format_specific
+            .insert(super::KEY_WEIGHT_CLASS.to_string(), serde_json::json!(500));
+        font2.instances.push(inst2);
+        let g2 = super::as_glyphs3(&font2).unwrap();
+        assert_eq!(g2.instances[0].weight_class, Some(500));
+    }
+
     use crate::{GlyphCategory, Shape};
     use fontdrasil::coords::Location;
     use pretty_assertions::assert_eq;
@@ -1310,62 +1267,6 @@ mod tests {
     use similar::TextDiff;
 
     use super::*;
-
-    fn prefix(code: &str) -> glyphslib::common::FeaturePrefix {
-        glyphslib::common::FeaturePrefix {
-            code: code.to_string(),
-            automatic: false,
-            disabled: false,
-            notes: None,
-            name: "test".to_string(),
-        }
-    }
-
-    #[test]
-    fn test_os2_classes_prefix() {
-        let mut font = Font::new();
-
-        // Nothing stated, nothing emitted.
-        assert!(os2_classes_prefix(&font, &[]).is_none());
-
-        // The case this exists for.
-        font.custom_ot_values.os2_us_weight_class = Some(700);
-        let got = os2_classes_prefix(&font, &[]).unwrap();
-        assert_eq!(got.code, "table OS/2 {\nWeightClass 700;\n} OS/2;");
-        assert_eq!(got.name, "OS/2");
-
-        // Both classes, in a stable order.
-        font.custom_ot_values.os2_us_width_class = Some(3);
-        let got = os2_classes_prefix(&font, &[]).unwrap();
-        assert_eq!(
-            got.code,
-            "table OS/2 {\nWeightClass 700;\nWidthClass 3;\n} OS/2;"
-        );
-
-        // Width alone is enough to emit.
-        font.custom_ot_values.os2_us_weight_class = None;
-        let got = os2_classes_prefix(&font, &[]).unwrap();
-        assert_eq!(got.code, "table OS/2 {\nWidthClass 3;\n} OS/2;");
-
-        // A source that states its own OS/2 block keeps it; two would not
-        // compile.
-        font.custom_ot_values.os2_us_weight_class = Some(700);
-        assert!(
-            os2_classes_prefix(&font, &[prefix("table OS/2 {\nWeightClass 300;\n} OS/2;")])
-                .is_none()
-        );
-        assert!(
-            os2_classes_prefix(&font, &[prefix("  table   OS/2 { FSType 0; } OS/2;")]).is_none()
-        );
-
-        // A different table, or the name appearing in a comment, is not a
-        // declaration and must not suppress ours.
-        assert!(
-            os2_classes_prefix(&font, &[prefix("table head { FontRevision 1.0; } head;")])
-                .is_some()
-        );
-        assert!(os2_classes_prefix(&font, &[prefix("# see the OS/2 table")]).is_some());
-    }
 
     #[test]
     fn test_transform() {

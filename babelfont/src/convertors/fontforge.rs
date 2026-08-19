@@ -633,16 +633,20 @@ impl SfdParser {
                     }
                 }
                 // Metrics
+                // Kept in FontForge's own convention, which is OpenType's:
+                // counter-clockwise, so a right-leaning italic is negative. The
+                // .glyphs writer flips it to the Glyphs convention and the
+                // compiler flips it back; negating here as well leaves an odd
+                // number of flips and back-slants every italic.
+                //
+                // Parsed as f64 because SFDs write fractional angles, and
+                // trimmed because the value carries surrounding whitespace.
                 "ItalicAngle" => {
-                    // FontForge writes the angle in the OpenType `post`
-                    // convention: counter-clockwise, so a right-leaning italic
-                    // is NEGATIVE. We use the opposite (clockwise), so negate
-                    // on reading.
                     if let Some(v) = &value {
                         if let Ok(angle) = v.trim().parse::<f64>() {
                             self.font.masters[0]
                                 .metrics
-                                .insert(MetricType::ItalicAngle, (-angle).round() as i32);
+                                .insert(MetricType::ItalicAngle, angle.round() as i32);
                         }
                     }
                 }
@@ -4712,11 +4716,6 @@ fn emit_metric_key(
             let absolute = *master.metrics.get(&metric).unwrap_or(&0);
             let delta = compute_offset_delta(font, key, absolute)?;
             out.push(format!("{}: {}", key, delta));
-        } else if metric == MetricType::ItalicAngle {
-            // ItalicAngle is stored as a counter-clockwise value in FontForge;
-            // we store as clockwise, so negate when writing out.
-            let value = *master.metrics.get(&metric).unwrap_or(&0);
-            out.push(format!("{}: {}", key, -value));
         } else {
             emit_metric(out, master, metric, key);
         }
@@ -5667,11 +5666,12 @@ mod tests {
     }
 
     #[test]
-    fn test_italic_angle_sign_is_converted() {
-        // FontForge uses the OpenType convention (negative = right-leaning);
-        // Glyphs uses the opposite, and the compiler negates on the way out.
-        // Without the conversion here the two negations never cancel and every
-        // converted italic is back-slanted.
+    fn test_italic_angle_is_read_through_unchanged() {
+        // Read through unchanged. The .glyphs writer negates once and the
+        // compiler negates again, so negating here as well leaves an odd number
+        // and back-slants every italic -- measured on Almendra-Italic, whose
+        // SFD says -12 and whose shipped binary says -12, against a build that
+        // produced +12.
         let sfd = |angle: &str| {
             format!(
                 "SplineFontDB: 3.0\nFontName: T\nAscent: 800\nDescent: 200\n\
@@ -5686,15 +5686,13 @@ mod tests {
                 .copied()
         };
 
-        // A right-leaning italic: -12 in the SFD becomes +12 for Glyphs.
-        assert_eq!(angle_of(sfd("-12")), Some(12));
-        // And back the other way.
-        assert_eq!(angle_of(sfd("12")), Some(-12));
+        assert_eq!(angle_of(sfd("-12")), Some(-12));
+        assert_eq!(angle_of(sfd("12")), Some(12));
         // Upright stays upright, with no negative zero.
         assert_eq!(angle_of(sfd("0")), Some(0));
         // A fractional angle must survive: an integer parse would drop it.
-        assert_eq!(angle_of(sfd("-12.4")), Some(12));
-        assert_eq!(angle_of(sfd("-12.6")), Some(13));
+        assert_eq!(angle_of(sfd("-12.4")), Some(-12));
+        assert_eq!(angle_of(sfd("-12.6")), Some(-13));
     }
 
     #[test]
@@ -5712,13 +5710,14 @@ mod tests {
         assert_eq!(original, "ItalicAngle: -10", "fixture changed");
 
         let font = load_str(&data).expect("Failed to load SFD");
-        // Stored in the Glyphs convention, i.e. negated.
+        // Stored as the SFD wrote it; the .glyphs writer and the compiler each
+        // flip it once on the way to the binary.
         assert_eq!(
             font.masters[0]
                 .metrics
                 .get(&MetricType::ItalicAngle)
                 .copied(),
-            Some(10)
+            Some(-10)
         );
 
         let emitted = to_str(&font).expect("Failed to emit SFD");

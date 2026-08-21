@@ -15,11 +15,18 @@ pub fn decode_utf7(s: &str) -> String {
                     continue;
                 }
             }
+            // A run ends at '-' (consumed) or at the first character outside the
+            // base64 alphabet (kept: it is literal text). Reading past that point
+            // folds the terminator and the next run into this one, and any residual
+            // bits then shift every unit that follows.
             let mut b64 = String::new();
             while let Some(&b64_ch) = chars.peek() {
                 if b64_ch == '-' {
                     chars.next(); // consume '-'
                     break;
+                }
+                if !b64_ch.is_ascii() || INVERSE_LOOKUP[b64_ch as usize] == 255 {
+                    break; // literal text: leave it for the outer loop
                 }
                 b64.push(b64_ch);
                 chars.next(); // consume base64 char
@@ -203,5 +210,20 @@ mod tests {
     fn lone_surrogate_becomes_the_replacement_character() {
         // A high surrogate with no low surrogate must not panic.
         assert_eq!(decode_utf7("+2DQ-"), "\u{FFFD}");
+    }
+    #[test]
+    fn a_run_ends_at_the_first_non_base64_character() {
+        // FontForge writes one run per word, separated by literal spaces, and a
+        // run's residual bits must not leak into the next: this is Russian
+        // "Sochetaniya s nizhney", three runs, two literal spaces.
+        assert_eq!(
+            decode_utf7("+BCEEPgRHBDUEQgQwBD0EOARP +BEEA +BD0EOAQ2BD0ENQQ5"),
+            "\u{421}\u{43e}\u{447}\u{435}\u{442}\u{430}\u{43d}\u{438}\u{44f} \u{441} \u{43d}\u{438}\u{436}\u{43d}\u{435}\u{439}"
+        );
+    }
+
+    #[test]
+    fn a_dash_terminated_run_consumes_the_dash() {
+        assert_eq!(decode_utf7("+BEE-x"), "\u{441}x");
     }
 }

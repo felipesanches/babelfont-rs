@@ -3687,23 +3687,23 @@ impl SfdParser {
         // so its references are checked against this.
         let mut emitted_lookups: HashSet<String> = HashSet::new();
 
-        // Collect all lookup names referenced by chain/context entries.
-        // These must be emitted before the chain/context lookups that reference them.
-        let all_deps: std::collections::HashSet<String> = self
-            .chain_pos_sub
-            .values()
-            .flatten()
-            .flat_map(|entry| {
-                entry.lookups.values().flat_map(|names| {
-                    names
-                        .iter()
-                        .filter_map(|n| self.assigned_lookup_names.get(n).cloned())
-                })
-            })
-            .collect();
+        // The lookups a chain lookup's rules call, by the caller's assigned name.
+        // Needed below to hoist a dependency defined after its caller.
+        let mut deps_by_lookup: HashMap<String, Vec<String>> = HashMap::new();
+        for (name, lookup) in self.gsub_lookups.0.iter().chain(self.gpos_lookups.0.iter()) {
+            let deps: Vec<String> = lookup
+                .subtables
+                .keys()
+                .filter_map(|sub| self.chain_pos_sub.get(sub.as_str()))
+                .flatten()
+                .flat_map(|entry| entry.lookups.values().flatten())
+                .filter_map(|n| self.assigned_lookup_names.get(n).cloned())
+                .collect();
+            if !deps.is_empty() {
+                deps_by_lookup.insert(name.clone(), deps);
+            }
+        }
 
-        // Build an ordered list of lookup names: dependencies first,
-        // then non-chain lookups, then chain/context lookups last.
         let mut is_chain: HashMap<String, bool> = HashMap::new();
         for (name, lookup) in self.gsub_lookups.0.iter().chain(self.gpos_lookups.0.iter()) {
             let has_chain = lookup
@@ -3713,16 +3713,16 @@ impl SfdParser {
             is_chain.insert(name.clone(), has_chain);
         }
 
-        // Take the names from the lookup tables, which are ordered, and NOT
-        // from `is_chain`, which is a HashMap. Rust seeds its hasher per
-        // process, so `is_chain.keys()` yields a different order on every run;
-        // the sort below is stable, so that order survives inside each bucket
-        // and the emitted feature code comes out shuffled. Two conversions of
-        // one unchanged .sfd produced different .glyphs files, different
-        // binaries, and a QA check on lookup order (smallcaps_before_ligatures)
-        // that passed or failed depending on the run.
+        // Definition order is application order: the compiled font applies lookups
+        // by their LookupList index, which follows the order they are defined here,
+        // and the feature block's reference order is discarded at compile time. So
+        // lookups are defined in the order the SFD declared them, with exactly one
+        // deviation: a lookup that a chain rule calls must already be defined when
+        // the chain is, so a dependency declared after its caller is hoisted to
+        // just before it. The names come from the lookup tables, which are ordered
+        // maps -- an unordered source here made conversion nondeterministic once.
         let mut seen_names = HashSet::new();
-        let mut ordered_names: Vec<String> = self
+        let declaration: Vec<String> = self
             .gsub_lookups
             .0
             .keys()
@@ -3730,17 +3730,25 @@ impl SfdParser {
             .filter(|name| seen_names.insert((*name).clone()))
             .cloned()
             .collect();
-        ordered_names.sort_by_key(|name| {
-            let ch = is_chain.get(name).copied().unwrap_or(false);
-            let is_dep = all_deps.contains(name.as_str());
-            if is_dep && !ch {
-                0 // Dependencies first
-            } else if ch {
-                2 // Chain/context lookups last
-            } else {
-                1 // Everything else in the middle
+        let mut ordered_names: Vec<String> = Vec::new();
+        let mut placed: HashSet<String> = HashSet::new();
+        fn place(
+            name: &str,
+            deps_by_lookup: &HashMap<String, Vec<String>>,
+            placed: &mut HashSet<String>,
+            out: &mut Vec<String>,
+        ) {
+            if !placed.insert(name.to_string()) {
+                return;
             }
-        });
+            for dep in deps_by_lookup.get(name).into_iter().flatten() {
+                place(dep, deps_by_lookup, placed, out);
+            }
+            out.push(name.to_string());
+        }
+        for name in &declaration {
+            place(name, &deps_by_lookup, &mut placed, &mut ordered_names);
+        }
 
         // The `aalt` feature may only contain feature references and single or
         // alternate substitution rules -- a lookup reference is a spec error and
@@ -3873,8 +3881,33 @@ impl SfdParser {
                     .filter(|line| is_single_or_alternate_sub(line))
                     .collect(),
             );
+        }
 
-            // Rearrange lookup.features as feature: Vec<FeatureLangSys>
+        // Register each emitted lookup with its features in declaration order. The
+        // compiled font ignores this order -- it applies lookups by LookupList
+        // index, arranged above -- but the feature file reads best when both agree,
+        // and FontForge's own export writes it this way.
+        let mut seen = HashSet::new();
+        let declaration_order: Vec<String> = self
+            .gsub_lookups
+            .0
+            .keys()
+            .chain(self.gpos_lookups.0.keys())
+            .filter(|name| seen.insert((*name).clone()))
+            .cloned()
+            .collect();
+        for name in &declaration_order {
+            if !emitted_lookups.contains(name) {
+                continue;
+            }
+            let Some(lookup) = self
+                .gsub_lookups
+                .0
+                .get(name)
+                .or_else(|| self.gpos_lookups.0.get(name))
+            else {
+                continue;
+            };
             for fls in &lookup.features {
                 feature_map
                     .entry(fls.feature.clone())
@@ -6125,17 +6158,21 @@ mod tests {
             indices.len()
         );
 
-        // The order is source order within each of three buckets --
-        // dependencies, then plain lookups, then chain/context lookups -- so
-        // the indices ascend except where a bucket changes. Two boundaries
-        // means at most two descents.
+        // Definition order is declaration order with one deviation: a lookup a
+        // chain rule calls is hoisted to just before its caller, since the
+        // feature file must define it first. Glegoo declares each contextual
+        // lookup ahead of its callees, so every swapped pair below is such a
+        // hoist; the final 0 is the first GPOS lookup following the GSUB ones.
         //
-        // This is what a shuffle breaks: over 30 lookups in random order,
-        // roughly half of each adjacent pair descends.
-        let descents = indices.windows(2).filter(|w| w[1] < w[0]).count();
-        assert!(
-            descents <= 2,
-            "lookup order is not source order within its buckets: {descents} descents in {indices:?}"
+        // The exact sequence is asserted because it is what a hash-seeded
+        // shuffle destroys and what an ordering-policy change must own up to.
+        assert_eq!(
+            indices,
+            vec![
+                0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 13, 17, 16, 19, 18, 21, 20, 23,
+                22, 24, 25, 26, 27, 29, 28, 30, 31, 32, 34, 33, 0
+            ],
+            "lookup definition order changed"
         );
     }
 
@@ -6401,6 +6438,62 @@ mod tests {
         assert!(
             fea.contains("feature ccmp"),
             "ccmp is built only from class-kind contextual lookups"
+        );
+    }
+
+    #[test]
+    fn test_feature_references_follow_declaration_order() {
+        // Definitions are hoisted so a lookup exists before a chain references it,
+        // while the references inside the feature block keep declaration order,
+        // exactly as FontForge's own export writes them. (The compiled font follows
+        // the definition order; the reference order is for the reader.)
+        let data = concat!(
+            "SplineFontDB: 3.0\n",
+            "Lookup: 6 0 0 \"Aaa First\" {\"chain-sub-1\"} ['calt' ('DFLT' <'dflt'>)]\n",
+            "ChainSub2: coverage \"chain-sub-1\"  0 0 0 1\n",
+            " 1 0 0\n",
+            "  Coverage: 7 glyph_a\n",
+            " 1\n",
+            "  SeqLookup: 0 \"Bbb Second\"\n",
+            "EndFPST\n",
+            "Lookup: 1 0 0 \"Bbb Second\" {\"second-sub\"} ['calt' ('DFLT' <'dflt'>)]\n",
+            "BeginChars: 2 2\n",
+            "StartChar: glyph_a\n",
+            "Encoding: 97 97 0\n",
+            "Width: 250\n",
+            "Substitution2: \"second-sub\" glyph_b\n",
+            "EndChar\n",
+            "StartChar: glyph_b\n",
+            "Encoding: 98 98 1\n",
+            "Width: 250\n",
+            "EndChar\n",
+            "EndChars\n",
+            "EndSplineFont\n"
+        );
+
+        let font = load_str(data).expect("Failed to parse SFD");
+        let fea = font.features.to_fea();
+
+        let block_start = fea.find("feature calt {").expect("calt feature emitted");
+        let block = &fea[block_start..];
+        let first = block
+            .find("lookup Aaa_First;")
+            .expect("calt should reference the chain lookup");
+        let second = block
+            .find("lookup Bbb_Second;")
+            .expect("calt should reference the simple lookup");
+        assert!(
+            first < second,
+            "References must follow declaration order, not the definition buckets:\n{fea}"
+        );
+        let def = fea
+            .find("lookup Bbb_Second {")
+            .expect("the simple lookup should be defined");
+        let chain_def = fea.find("lookup Aaa_First {").expect("chain defined");
+        assert!(
+            def < chain_def,
+            "The referenced lookup must still be defined before the chain that calls \
+             it:\n{fea}"
         );
     }
 

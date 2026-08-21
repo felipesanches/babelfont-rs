@@ -5794,7 +5794,7 @@ mod tests {
             "lookup order is not source order within its buckets: {descents} descents in {indices:?}"
         );
     }
-    
+
     #[test]
     fn test_generated_suffix_names_cannot_be_taken_twice() {
         // "My Lookup" and "My-Lookup" sanitize alike, so the second is assigned

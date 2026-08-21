@@ -634,7 +634,14 @@ impl<'a> SubsetVisitor<'a> {
         nested_block
             .statements
             .retain(|statement| statement != &*DELETION_COMMENT);
-        if nested_block.statements.iter().any(non_trivial_statement) {
+        // A featureNames (or sizemenuname) block is nothing BUT name records;
+        // they are its payload, not scaffolding, and subsetting glyphs is no
+        // reason to lose the font's UI strings.
+        if nested_block
+            .statements
+            .iter()
+            .any(|st| non_trivial_statement(st) || matches!(st, Statement::FeatureNameStatement(_)))
+        {
             return None;
         }
         Some(Statement::Comment(Comment::new(
@@ -854,6 +861,25 @@ mod tests {
         assert!(
             fea.contains("# Removed feature bar"),
             "bar's lookup was dropped, so bar must still go:\n{fea}"
+        );
+    }
+
+    #[test]
+    fn test_featurenames_block_survives_subsetting() {
+        // featureNames blocks hold nothing but name records, which the triviality
+        // list treats as scaffolding -- but they are the block's payload, and
+        // subsetting glyphs is no reason to drop the font's UI strings.
+        let mut font = dummy_font_with_glyphs(vec!["a", "b", "c"]);
+        font.features = Features::from_fea(
+            "feature ss01 { featureNames { name 3 1 1033 \"Fancy\"; }; sub a by c; } ss01;\n",
+        );
+        SubsetLayout::new(vec!["a", "c"])
+            .apply(&mut font)
+            .expect("Feature subsetting failed");
+        let fea = font.features.to_fea();
+        assert!(
+            fea.contains("featureNames") && fea.contains("name \"Fancy\";"),
+            "the name record must survive (3/1/1033 renders as the elided default):\n{fea}"
         );
     }
 

@@ -262,6 +262,16 @@ impl Source for BabelfontIrSource {
     }
 }
 
+/// The metrics a skipped GlobalMetrics work provides: downstream work requires
+/// global metrics to exist, so "skip" means the ufo2ft-standard defaults fontir
+/// derives from the em size -- ascender 0.8 upm, descender -0.2 upm, x-height
+/// 0.5 upm, cap height 0.7 upm -- at the default location, not invented numbers.
+fn default_global_metrics(upm: u16) -> Result<fontir::ir::GlobalMetrics, Error> {
+    let mut builder = fontir::ir::GlobalMetricsBuilder::new();
+    builder.populate_defaults(&NormalizedLocation::default(), upm, None, None, None, None);
+    builder.build(&Axes::default())
+}
+
 #[derive(Debug)]
 struct DummyWork((WorkId, u16));
 impl Work<Context, WorkId, Error> for DummyWork {
@@ -272,18 +282,9 @@ impl Work<Context, WorkId, Error> for DummyWork {
     fn exec(&self, context: &Context) -> Result<(), Error> {
         match &self.0 .0 {
             WorkId::StaticMetadata => todo!(),
-            WorkId::GlobalMetrics => {
-                let mut builder = fontir::ir::GlobalMetricsBuilder::new();
-                builder.populate_defaults(
-                    &NormalizedLocation::default(),
-                    self.0 .1,
-                    Some(456.0),
-                    Some(1000.0),
-                    Some(-500.0),
-                    None,
-                );
-                context.global_metrics.set(builder.build(&Axes::default())?)
-            }
+            WorkId::GlobalMetrics => context
+                .global_metrics
+                .set(default_global_metrics(self.0 .1)?),
             WorkId::Glyph(_glyph_name) => todo!(),
             WorkId::PreliminaryGlyphOrder => todo!(),
             WorkId::GlyphOrder => todo!(),
@@ -332,5 +333,31 @@ mod tests {
         };
         let result = BabelfontIrSource::compile(font, options);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_skipped_metrics_scale_with_the_em_size() {
+        // A skipped GlobalMetrics work must still provide metrics -- downstream
+        // work requires them -- and they must be the standard defaults derived
+        // from the em size, not fixed numbers that only fit a 1000-unit em.
+        use fontdrasil::coords::NormalizedLocation;
+        use fontir::ir::GlobalMetric;
+        let pos = NormalizedLocation::default();
+        for upm in [1000u16, 2048] {
+            let metrics = super::default_global_metrics(upm).unwrap();
+            let upm = upm as f64;
+            for (metric, expected) in [
+                (GlobalMetric::Ascender, 0.8 * upm),
+                (GlobalMetric::Descender, -0.2 * upm),
+                (GlobalMetric::XHeight, 0.5 * upm),
+                (GlobalMetric::CapHeight, 0.7 * upm),
+            ] {
+                let got = metrics.get(metric, &pos).into_inner();
+                assert!(
+                    (got - expected).abs() <= 0.5,
+                    "{metric:?} at upm {upm}: got {got}, expected about {expected}"
+                );
+            }
+        }
     }
 }

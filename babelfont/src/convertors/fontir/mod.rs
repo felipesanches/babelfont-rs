@@ -318,6 +318,32 @@ mod tests {
     use crate::convertors::fontir::{BabelfontIrSource, CompilationOptions};
 
     #[test]
+    fn test_compiled_italic_angle_matches_the_source() {
+        // Ibarra Real Nova Italic's UFO says italicAngle -22 and its shipped
+        // Google Fonts binary says post.italicAngle -22. An odd number of
+        // convention flips anywhere in the chain ships +22, a back-slant.
+        let font = crate::load("resources/IbarraRealNova-Italic.ufo").unwrap();
+        let bytes = BabelfontIrSource::compile(font, CompilationOptions::default()).unwrap();
+        let fontref = write_fonts::read::FontRef::new(&bytes).unwrap();
+        use write_fonts::read::TableProvider;
+        let angle = fontref.post().unwrap().italic_angle().to_f32();
+        assert_eq!(angle, -22.0, "post.italicAngle must match the source");
+
+        // And reading that binary back stores the Glyphs convention again.
+        let dir = tempfile::tempdir().unwrap();
+        let ttf = dir.path().join("ital.ttf");
+        std::fs::write(&ttf, &bytes).unwrap();
+        let reloaded = crate::load(ttf).unwrap();
+        assert_eq!(
+            reloaded.masters[0]
+                .metrics
+                .get(&crate::MetricType::ItalicAngle),
+            Some(&22),
+            "the TTF reader must convert post back to the internal convention"
+        );
+    }
+
+    #[test]
     fn test_fustat_skipmetrics() {
         let font = crate::load("resources/Fustat.glyphs").unwrap();
         let options = CompilationOptions {

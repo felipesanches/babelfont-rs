@@ -498,7 +498,8 @@ pub(crate) fn save_info(info: &mut norad::FontInfo, font: &Font, master_ix: usiz
         .map(|m| m.guides.iter().flat_map(|g| g.try_into()).collect())
         .unwrap_or_default();
     info.guidelines = (!guides.is_empty()).then_some(guides);
-    info.italic_angle = get_metric(MetricType::ItalicAngle);
+    // Written back in the UFO's post convention: see load_master_info.
+    info.italic_angle = get_metric(MetricType::ItalicAngle).map(|v| -v);
     // macintoshFONDName, yey
     info.note = font.note.clone();
     // gasp range records
@@ -643,7 +644,12 @@ pub(crate) fn load_master_info(master: &mut Master, info: &norad::FontInfo) {
     load_metric!(info, metrics, ascender, MetricType::Ascender);
     load_metric!(info, metrics, cap_height, MetricType::CapHeight);
     load_metric!(info, metrics, descender, MetricType::Descender);
-    load_metric!(info, metrics, italic_angle, MetricType::ItalicAngle);
+    // A UFO stores the italic angle in the post convention, negative for a
+    // right lean; babelfont stores the Glyphs convention, the opposite sign
+    // (compare glyphsLib masters.py, `italic_angle = -master.italicAngle`).
+    if let Some(v) = info.italic_angle {
+        metrics.insert(MetricType::ItalicAngle, -v as i32);
+    }
     load_metric!(info, metrics, x_height, MetricType::XHeight);
     load_metric!(
         info,
@@ -1183,6 +1189,34 @@ pub(crate) mod tests {
         assert_eq!(ufo1.data, ufo2.data);
         assert_eq!(ufo1.images, ufo2.images);
         assert_eq!(ufo1.font_info, ufo2.font_info);
+    }
+
+    #[test]
+    fn test_italic_angle_conventions() {
+        // A UFO stores the angle in the post convention, negative for a right
+        // lean; babelfont stores the Glyphs convention, the opposite sign, the
+        // same as glyphsLib's `-master.italicAngle`. Ibarra Real Nova Italic
+        // says -22 in fontinfo, and its shipped binary says -22 in post; kept
+        // raw, both of babelfont's compile paths shipped +22, a back-slant.
+        let font = crate::load("resources/IbarraRealNova-Italic.ufo").unwrap();
+        assert_eq!(
+            font.masters[0].metrics.get(&crate::MetricType::ItalicAngle),
+            Some(&22),
+            "internally the Glyphs convention: right lean is positive"
+        );
+
+        // And back out in the UFO's own convention, unchanged.
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("ital.ufo");
+        font.save(out.clone()).unwrap();
+        let reloaded = crate::load(out).unwrap();
+        assert_eq!(
+            reloaded.masters[0]
+                .metrics
+                .get(&crate::MetricType::ItalicAngle),
+            Some(&22),
+            "a UFO round-trip must preserve the angle"
+        );
     }
 
     #[test]

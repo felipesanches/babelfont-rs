@@ -258,9 +258,11 @@ fn load_metrics(
         fontref.hhea()?.descender().to_i16() as i32,
     );
 
+    // post stores the angle negative for a right lean; babelfont stores the
+    // Glyphs convention, the opposite sign.
     metrics.insert(
         MetricType::ItalicAngle,
-        fontref.post()?.italic_angle().to_f32() as i32,
+        -fontref.post()?.italic_angle().to_f32() as i32,
     );
     Ok(metrics)
 }

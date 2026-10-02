@@ -2411,3 +2411,47 @@ fn test_lang_names_keep_every_windows_language() {
         Some("Normal CA")
     );
 }
+
+#[test]
+fn test_typographic_subfamily_names_the_master() {
+    // LangName 1033 states a non-RIBBI style as the Regular of a style-linked
+    // family "Overlock Black" (IDs 1 and 2) within the typographic family
+    // "Overlock" (IDs 16 and 17).
+    let data = concat!(
+        "SplineFontDB: 3.0\n",
+        "FontName: Overlock-Black\n",
+        "FullName: Overlock-Black\n",
+        "FamilyName: Overlock\n",
+        "Weight: Black\n",
+        "LangName: 1033 \"\" \"Overlock Black\" \"Regular\" \"\" \"Overlock Black\" \"\" \"\" \"\" \"\" \"\" \"\" \"\" \"\" \"\" \"\" \"\" \"Overlock\" \"Black\"\n",
+        "Ascent: 800\n",
+        "Descent: 200\n",
+        "LayerCount: 2\n",
+        "Layer: 0 0 \"Back\" 1\n",
+        "Layer: 1 0 \"Fore\" 0\n",
+        "BeginChars: 0 0\n",
+        "EndChars\n",
+        "EndSplineFont\n"
+    );
+    let font = load_str(data).expect("Failed to parse SFD");
+    assert_eq!(
+        font.names.family_name.get_default().unwrap(),
+        "Overlock Black"
+    );
+    assert_eq!(
+        font.names.typographic_family.get_default().unwrap(),
+        "Overlock"
+    );
+    assert_eq!(font.masters[0].name.get_default().unwrap(), "Black");
+
+    let glyphs = crate::convertors::glyphs3::as_glyphs3(&font).unwrap();
+    assert_eq!(glyphs.family_name, "Overlock");
+    assert!(
+        !glyphs
+            .custom_parameters
+            .iter()
+            .any(|cp| cp.name == "Name Table Entry"),
+        "Glyphs derives every name from family Overlock and style Black: {:?}",
+        glyphs.custom_parameters
+    );
+}

@@ -1022,11 +1022,15 @@ impl SfdParser {
             None => style_from_font_name,
         };
 
+        // Name ID 17 is the style within the typographic family; name ID 2 is
+        // the style within the style-linked family of name ID 1. The master is
+        // a style of the typographic family, so ID 17 names it when stated.
         let stated_style = self
             .font
             .names
-            .preferred_subfamily_name
+            .typographic_subfamily
             .get_default()
+            .or_else(|| self.font.names.preferred_subfamily_name.get_default())
             .cloned();
         if self
             .font

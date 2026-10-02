@@ -96,6 +96,18 @@ fn copy_custom_parameters(
     }
 }
 
+/// The family a Glyphs file names: the typographic family (name ID 16) when
+/// one is stated, otherwise the family (name ID 1). Glyphs derives name IDs 1
+/// and 2 from this family and the style name, and states IDs 16 and 17 as
+/// this family and that style when the style is not one of the four
+/// style-linked styles.
+pub(crate) fn glyphs_family_name(names: &Names) -> Option<&String> {
+    names
+        .typographic_family
+        .get_default()
+        .or_else(|| names.family_name.get_default())
+}
+
 fn get_cp<'a>(format_specific: &'a FormatSpecific, name: &str) -> Option<&'a serde_json::Value> {
     format_specific.get(&format!("{}{}", KEY_CUSTOM_PARAMETERS, name))
 }
@@ -1631,10 +1643,7 @@ pub(crate) fn as_glyphs3(font: &Font) -> Result<glyphs3::Glyphs3, BabelfontError
         custom_parameters.push(axis_mappings);
     }
 
-    let family_name = font
-        .names
-        .family_name
-        .get_default()
+    let family_name = glyphs_family_name(&font.names)
         .map(|x| x.to_string())
         .unwrap_or_default();
 

@@ -1,7 +1,9 @@
 use glyphslib::{common::CustomParameter, Plist};
 
 use crate::{
-    common::FormatSpecific, convertors::glyphs3::get_cp, BabelfontError, Font, MetricType,
+    common::FormatSpecific,
+    convertors::glyphs3::{get_cp, glyphs_family_name},
+    BabelfontError, Font, MetricType,
 };
 
 /// A set of paired functions to interpret/export font-level custom parameters
@@ -33,16 +35,17 @@ fn export_name_table_entries(custom_parameters: &mut Vec<CustomParameter>, font:
         ([master], []) => master.name.get_default(),
         _ => None,
     };
-    let (Some(style), Some(family)) = (style, font.names.family_name.get_default()) else {
+    let (Some(style), Some(family)) = (style, glyphs_family_name(&font.names)) else {
         return;
     };
     let (derived_family, derived_style) = style_map_names(family, style);
+    let stated_family = font.names.family_name.get_default().unwrap_or(family);
     let mut entries = vec![];
     if let Some(stated_style) = font.names.preferred_subfamily_name.get_default() {
-        if (family.as_str(), stated_style.as_str())
+        if (stated_family.as_str(), stated_style.as_str())
             != (derived_family.as_str(), derived_style.as_str())
         {
-            entries.push((1, family.clone()));
+            entries.push((1, stated_family.clone()));
             entries.push((2, stated_style.clone()));
         }
     }

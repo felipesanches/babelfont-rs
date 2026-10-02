@@ -3,7 +3,7 @@ use crate::{
     glyph::{self, glyphs::glyph_to_glyphs},
     i18ndictionary::I18NDictionary,
     names::Names,
-    Axis, BabelfontError, CustomOTValues, Font, GlyphList, Layer, LayerType, Master, Tag,
+    Axis, BabelfontError, CustomOTValues, Font, GlyphList, Layer, LayerType, Master, NameId, Tag,
 };
 use fontdrasil::coords::{DesignCoord, DesignLocation, UserCoord};
 use glyphslib::glyphs3::{self, Property};
@@ -106,6 +106,22 @@ pub(crate) fn glyphs_family_name(names: &Names) -> Option<&String> {
         .typographic_family
         .get_default()
         .or_else(|| names.family_name.get_default())
+}
+
+/// The name ID whose localizations the `familyNames` property holds: those of
+/// the family a Glyphs file names (see [`glyphs_family_name`]). A family
+/// (name ID 1) that differs from the typographic family is not that family.
+pub(crate) fn family_names_property_id(names: &Names) -> NameId {
+    match (
+        names.typographic_family.get_default(),
+        names.family_name.get_default(),
+    ) {
+        (Some(typographic_family), Some(family)) if typographic_family != family => {
+            NameId::TYPOGRAPHIC_FAMILY_NAME
+        }
+        (Some(_), None) => NameId::TYPOGRAPHIC_FAMILY_NAME,
+        _ => NameId::FAMILY_NAME,
+    }
 }
 
 fn get_cp<'a>(format_specific: &'a FormatSpecific, name: &str) -> Option<&'a serde_json::Value> {
@@ -648,11 +664,10 @@ fn save_properties(names: &Names, custom_ot_values: &CustomOTValues) -> Vec<glyp
 
     // Localized-only properties
     // Only do family name if there's more than one language
-    if !names.family_name.is_single() {
-        push_localized!(
-            names.family_name,
-            glyphs3::LocalizedPropertyKey::FamilyNames
-        );
+    if let Some(family_names) = names.get(family_names_property_id(names)) {
+        if !family_names.is_single() {
+            push_localized!(family_names, glyphs3::LocalizedPropertyKey::FamilyNames);
+        }
     }
 
     push_localized!(names.license, glyphs3::LocalizedPropertyKey::Licenses);
@@ -1913,6 +1928,76 @@ mod tests {
                 "missing singular property {key}: got {singulars:?}"
             );
         }
+    }
+
+    fn family_names_property(
+        props: &[glyphslib::glyphs3::Property],
+    ) -> Option<Vec<(String, String)>> {
+        props.iter().find_map(|p| match p {
+            glyphslib::glyphs3::Property::LocalizedProperty {
+                key: glyphslib::glyphs3::LocalizedPropertyKey::FamilyNames,
+                values,
+            } => Some(
+                values
+                    .iter()
+                    .map(|v| (v.language.clone(), v.value.clone()))
+                    .collect(),
+            ),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn family_names_hold_the_typographic_family_when_the_family_differs() {
+        let mut font = crate::Font::new();
+        let family = &mut font.names.family_name;
+        family.set_default("Thabit-Bold".to_string());
+        family.insert(
+            "ARA".to_string(),
+            "\u{062B}\u{0627}\u{0628}\u{062A}".to_string(),
+        );
+        font.names
+            .typographic_family
+            .set_default("Thabit".to_string());
+        let props = super::save_properties(&font.names, &font.custom_ot_values);
+        assert_eq!(family_names_property(&props), None);
+
+        font.names
+            .typographic_family
+            .insert("DEU".to_string(), "Thabit DE".to_string());
+        let props = super::save_properties(&font.names, &font.custom_ot_values);
+        assert_eq!(
+            family_names_property(&props),
+            Some(vec![
+                ("dflt".to_string(), "Thabit".to_string()),
+                ("DEU".to_string(), "Thabit DE".to_string()),
+            ])
+        );
+    }
+
+    #[test]
+    fn family_names_hold_the_family_without_a_differing_typographic_family() {
+        let mut font = crate::Font::new();
+        let family = &mut font.names.family_name;
+        family.set_default("Thabit".to_string());
+        family.insert(
+            "ARA".to_string(),
+            "\u{062B}\u{0627}\u{0628}\u{062A}".to_string(),
+        );
+        font.names
+            .typographic_family
+            .set_default("Thabit".to_string());
+        let props = super::save_properties(&font.names, &font.custom_ot_values);
+        assert_eq!(
+            family_names_property(&props),
+            Some(vec![
+                ("dflt".to_string(), "Thabit".to_string()),
+                (
+                    "ARA".to_string(),
+                    "\u{062B}\u{0627}\u{0628}\u{062A}".to_string()
+                ),
+            ])
+        );
     }
 
     fn singular_property(

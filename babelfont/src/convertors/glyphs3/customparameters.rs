@@ -25,10 +25,21 @@ pub(crate) fn export_font_level_cps(
     Ok(())
 }
 
+/// A "Name Table Entry" custom parameter: a name ID and its US English value.
+struct NameTableEntry {
+    name_id: u16,
+    value: String,
+}
+
 /// The names a single-style font states that Glyphs would derive differently
 /// from its family and style name. Glyphs has no property for name IDs 2 and 4
 /// (`postscriptFullName` is the CFF full name), so they go in "Name Table
 /// Entry" parameters, which apply to every instance.
+///
+/// Glyphs writes the typographic family and subfamily (name IDs 16 and 17)
+/// as its family and style name only for a style other than the four
+/// style-linked ones; otherwise they read as name IDs 1 and 2. A stated name
+/// ID 16 or 17 that would read differently is written as an entry too.
 fn export_name_table_entries(custom_parameters: &mut Vec<CustomParameter>, font: &Font) {
     let style = match (font.masters.as_slice(), font.instances.as_slice()) {
         ([_], [instance]) => instance.name.get_default(),
@@ -41,23 +52,53 @@ fn export_name_table_entries(custom_parameters: &mut Vec<CustomParameter>, font:
     let (derived_family, derived_style) = style_map_names(family, style);
     let stated_family = font.names.family_name.get_default().unwrap_or(family);
     let mut entries = vec![];
+    let (mut family_reads, mut style_reads) = (derived_family.clone(), derived_style.clone());
     if let Some(stated_style) = font.names.preferred_subfamily_name.get_default() {
         if (stated_family.as_str(), stated_style.as_str())
             != (derived_family.as_str(), derived_style.as_str())
         {
-            entries.push((1, stated_family.clone()));
-            entries.push((2, stated_style.clone()));
+            entries.push(NameTableEntry {
+                name_id: 1,
+                value: stated_family.clone(),
+            });
+            entries.push(NameTableEntry {
+                name_id: 2,
+                value: stated_style.clone(),
+            });
+            family_reads = stated_family.clone();
+            style_reads = stated_style.clone();
+        }
+    }
+    if derived_family == *family {
+        if let Some(typographic_family) = font.names.typographic_family.get_default() {
+            if *typographic_family != family_reads {
+                entries.push(NameTableEntry {
+                    name_id: 16,
+                    value: typographic_family.clone(),
+                });
+            }
+        }
+        if let Some(typographic_subfamily) = font.names.typographic_subfamily.get_default() {
+            if *typographic_subfamily != style_reads {
+                entries.push(NameTableEntry {
+                    name_id: 17,
+                    value: typographic_subfamily.clone(),
+                });
+            }
         }
     }
     if let Some(full_name) = font.names.full_name.get_default() {
         if *full_name != format!("{family} {style}") {
-            entries.push((4, full_name.clone()));
+            entries.push(NameTableEntry {
+                name_id: 4,
+                value: full_name.clone(),
+            });
         }
     }
-    for (name_id, value) in entries {
+    for entry in entries {
         custom_parameters.push(CustomParameter {
             name: "Name Table Entry".to_string(),
-            value: format!("{name_id}; {value}").into(),
+            value: format!("{}; {}", entry.name_id, entry.value).into(),
             disabled: false,
         });
     }
@@ -422,6 +463,29 @@ mod name_table_entry_tests {
         assert_eq!(
             entries(&font),
             vec!["1; Nova Cut", "2; Book", "4; Nova Cut"]
+        );
+    }
+
+    #[test]
+    fn test_typographic_family_that_reads_differently_becomes_an_entry() {
+        let mut font = single_style_font("Thabit-Bold", "Bold");
+        font.names
+            .typographic_family
+            .set_default("Thabit".to_string());
+        font.names
+            .preferred_subfamily_name
+            .set_default("Bold".to_string());
+        font.names
+            .full_name
+            .set_default("Thabit-Bold Bold".to_string());
+        assert_eq!(
+            entries(&font),
+            vec![
+                "1; Thabit-Bold",
+                "2; Bold",
+                "16; Thabit",
+                "4; Thabit-Bold Bold"
+            ]
         );
     }
 

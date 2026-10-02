@@ -2455,3 +2455,28 @@ fn test_typographic_subfamily_names_the_master() {
         glyphs.custom_parameters
     );
 }
+
+#[test]
+fn test_style_linked_name_id_2_names_the_master() {
+    // Nothing states a style but the Weight field, from which name ID 2 is
+    // "Regular"; TTFWeight 500 is the weight class, not a style.
+    let data = concat!(
+        "SplineFontDB: 3.0\n",
+        "FontName: Thabit\n",
+        "FullName: Thabit\n",
+        "FamilyName: Thabit\n",
+        "Weight: Regular\n",
+        "TTFWeight: 500\n",
+        "Ascent: 800\n",
+        "Descent: 200\n",
+        "LayerCount: 2\n",
+        "Layer: 0 0 \"Back\" 1\n",
+        "Layer: 1 0 \"Fore\" 0\n",
+        "BeginChars: 0 0\n",
+        "EndChars\n",
+        "EndSplineFont\n"
+    );
+    let font = load_str(data).expect("Failed to parse SFD");
+    assert_eq!(font.custom_ot_values.os2_us_weight_class, Some(500));
+    assert_eq!(font.masters[0].name.get_default().unwrap(), "Regular");
+}

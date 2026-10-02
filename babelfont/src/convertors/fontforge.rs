@@ -1032,6 +1032,7 @@ impl SfdParser {
             .get_default()
             .or_else(|| self.font.names.preferred_subfamily_name.get_default())
             .cloned();
+        let mut derived_style_linked = None;
         if self
             .font
             .names
@@ -1056,6 +1057,15 @@ impl SfdParser {
                     .get("postscript_weight_name")
                     .and_then(|v| v.as_str()),
             );
+            // Name ID 2 of one of the four style-linked styles names the
+            // master when nothing else does: such a style has no typographic
+            // subfamily of its own.
+            if matches!(
+                derived.as_str(),
+                "Regular" | "Italic" | "Bold" | "Bold Italic" | "BoldItalic"
+            ) {
+                derived_style_linked = Some(derived.clone());
+            }
             self.font
                 .names
                 .preferred_subfamily_name
@@ -1067,6 +1077,8 @@ impl SfdParser {
             if let Some(style) = stated_style {
                 master.name = style.into();
             } else if let Some(style) = style_from_font_name {
+                master.name = style.into();
+            } else if let Some(style) = derived_style_linked {
                 master.name = style.into();
             } else if let Some(weight) = self.font.custom_ot_values.os2_us_weight_class {
                 let weight_name = crate::constants::OS2_WEIGHT_TO_NAME_MAP

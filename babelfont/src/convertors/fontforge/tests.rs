@@ -2480,3 +2480,30 @@ fn test_style_linked_name_id_2_names_the_master() {
     assert_eq!(font.custom_ot_values.os2_us_weight_class, Some(500));
     assert_eq!(font.masters[0].name.get_default().unwrap(), "Regular");
 }
+
+#[test]
+fn test_typographic_subfamily_that_links_differently_does_not_name_the_master() {
+    // Name ID 17 "Bold" would link as Bold, but name ID 2 states Regular.
+    let data = concat!(
+        "SplineFontDB: 3.0\n",
+        "FontName: PassionOne-Regular\n",
+        "FullName: Passion One Regular\n",
+        "FamilyName: Passion One\n",
+        "Weight: Regular\n",
+        "LangName: 1033 \"\" \"\" \"Regular\" \"\" \"\" \"\" \"\" \"\" \"\" \"\" \"\" \"\" \"\" \"\" \"\" \"\" \"Passion\" \"Bold\"\n",
+        "Ascent: 800\n",
+        "Descent: 200\n",
+        "LayerCount: 2\n",
+        "Layer: 0 0 \"Back\" 1\n",
+        "Layer: 1 0 \"Fore\" 0\n",
+        "BeginChars: 0 0\n",
+        "EndChars\n",
+        "EndSplineFont\n"
+    );
+    let font = load_str(data).expect("Failed to parse SFD");
+    assert_eq!(font.masters[0].name.get_default().unwrap(), "Regular");
+    assert_eq!(
+        font.names.typographic_subfamily.get_default().unwrap(),
+        "Bold"
+    );
+}

@@ -1022,24 +1022,14 @@ impl SfdParser {
             None => style_from_font_name,
         };
 
-        // Name ID 17 is the style within the typographic family; name ID 2 is
-        // the style within the style-linked family of name ID 1. The master is
-        // a style of the typographic family, so ID 17 names it when stated.
-        let stated_style = self
-            .font
-            .names
-            .typographic_subfamily
-            .get_default()
-            .or_else(|| self.font.names.preferred_subfamily_name.get_default())
-            .cloned();
-        let mut derived_style_linked = None;
-        if self
+        let stated_style_linked = self
             .font
             .names
             .preferred_subfamily_name
             .get_default()
-            .is_none()
-        {
+            .cloned();
+        let mut derived_style_linked = None;
+        if stated_style_linked.is_none() {
             let derived = fontforge_style_name(
                 self.font
                     .names
@@ -1071,6 +1061,24 @@ impl SfdParser {
                 .preferred_subfamily_name
                 .set_default(derived);
         }
+
+        // Name ID 17 is the style within the typographic family; name ID 2 is
+        // the style within the style-linked family of name ID 1, which the
+        // style links to. ID 17 names the master when it links as ID 2 does.
+        let typographic_style = self
+            .font
+            .names
+            .typographic_subfamily
+            .get_default()
+            .filter(|style| {
+                self.font
+                    .names
+                    .preferred_subfamily_name
+                    .get_default()
+                    .is_some_and(|linked| style_link(style) == style_link(linked))
+            })
+            .cloned();
+        let stated_style = typographic_style.or(stated_style_linked);
 
         // Set master name based on width/weight
         if let Some(master) = self.font.masters.get_mut(0) {
@@ -4021,6 +4029,22 @@ fn snap_matrix_entry(value: f64) -> f64 {
         nearest
     } else {
         value
+    }
+}
+
+/// The style-linked style (name ID 2) a style name links to: Regular, Italic,
+/// Bold or Bold Italic.
+fn style_link(style: &str) -> &'static str {
+    let style = style.replace(' ', "");
+    let (rest, italic) = match style.strip_suffix("Italic") {
+        Some(rest) => (rest, true),
+        None => (style.as_str(), false),
+    };
+    match (rest, italic) {
+        ("Bold", false) => "Bold",
+        ("Bold", true) => "Bold Italic",
+        (_, true) => "Italic",
+        (_, false) => "Regular",
     }
 }
 

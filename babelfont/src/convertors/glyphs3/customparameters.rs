@@ -4,7 +4,7 @@ use crate::{
     common::FormatSpecific,
     convertors::glyphs3::{get_cp, glyphs_family_name},
     i18ndictionary::DFLT,
-    names::{is_layout_language_tag, name_language_to_ot_lang_id},
+    names::{is_layout_language_tag, is_mac_language_code, name_language_to_ot_lang_id},
     BabelfontError, Font, MetricType, NameId,
 };
 
@@ -70,7 +70,10 @@ fn export_localized_name_table_entries(custom_parameters: &mut Vec<CustomParamet
                 continue;
             }
             let Some(language_id) = name_language_to_ot_lang_id(language) else {
-                log::warn!("No Windows language ID for name language {language}; dropped");
+                // A Macintosh name record: these entries are Windows records.
+                if !is_mac_language_code(language) {
+                    log::warn!("No Windows language ID for name language {language}; dropped");
+                }
                 continue;
             };
             if language_id == ENGLISH_US {
@@ -1034,6 +1037,18 @@ mod localized_name_table_entry_tests {
         font.names
             .preferred_subfamily_name
             .insert("ENG".to_string(), "Regular".to_string());
+        assert!(entries(&font).is_empty());
+    }
+
+    #[test]
+    fn test_a_macintosh_name_gets_no_entry() {
+        let mut font = single_style_font();
+        font.names
+            .family_name
+            .insert("en".to_string(), "Comic Relief".to_string());
+        font.names
+            .family_name
+            .insert("ko".to_string(), "Comic Relief".to_string());
         assert!(entries(&font).is_empty());
     }
 

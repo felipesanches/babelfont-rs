@@ -692,14 +692,25 @@ const LANGUAGE_ID_TO_LAYOUT_TAG: &[(u16, &str)] = &[
     (0x0404, "ZHT"),
 ];
 
+/// Language IDs below this are Macintosh language codes, not Windows ones.
+const FIRST_WINDOWS_LANGUAGE_ID: u16 = 0x0400;
+
 /// The Windows language ID of a name language key: an OpenType Layout language
-/// tag or a BCP-47 tag.
+/// tag or a BCP-47 tag. A Macintosh language code has none.
 pub fn name_language_to_ot_lang_id(language: &str) -> Option<u16> {
     LANGUAGE_ID_TO_LAYOUT_TAG
         .iter()
         .chain(LANGUAGE_ID_TO_BCP47.iter())
-        .find(|&&(_, tag)| tag == language)
+        .find(|&&(id, tag)| tag == language && id >= FIRST_WINDOWS_LANGUAGE_ID)
         .map(|&(id, _)| id)
+}
+
+/// Whether a name language key is the BCP-47 code of a Macintosh language,
+/// which only a Macintosh name record has.
+pub fn is_mac_language_code(language: &str) -> bool {
+    LANGUAGE_ID_TO_BCP47
+        .iter()
+        .any(|&(id, tag)| tag == language && id < FIRST_WINDOWS_LANGUAGE_ID)
 }
 
 /// Whether a name language key is an OpenType Layout language tag, the

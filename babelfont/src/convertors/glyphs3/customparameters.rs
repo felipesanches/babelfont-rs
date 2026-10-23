@@ -1053,6 +1053,21 @@ mod localized_name_table_entry_tests {
     }
 
     #[test]
+    fn test_a_korean_family_name_stays_in_its_property() {
+        // KOR is a Glyphs language code (glyphsLib maps it to 0x0412), so the
+        // familyNames property holds it; the subfamily, which no property holds,
+        // is an entry.
+        let mut font = single_style_font();
+        font.names
+            .family_name
+            .insert("KOR".to_string(), "\u{AD6C}\u{AE30}".to_string());
+        font.names
+            .preferred_subfamily_name
+            .insert("KOR".to_string(), "Regular".to_string());
+        assert_eq!(entries(&font), ["2 3 1 0x0412; Regular"]);
+    }
+
+    #[test]
     fn test_no_entries_for_several_styles() {
         let mut font = single_style_font();
         font.names

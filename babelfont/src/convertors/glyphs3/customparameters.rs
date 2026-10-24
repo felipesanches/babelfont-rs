@@ -2,7 +2,7 @@ use glyphslib::{common::CustomParameter, Plist};
 
 use crate::{
     common::FormatSpecific,
-    convertors::glyphs3::{get_cp, glyphs_family_name},
+    convertors::glyphs3::{family_names_property_id, get_cp, glyphs_family_name},
     i18ndictionary::DFLT,
     names::{is_layout_language_tag, is_mac_language_code, name_language_to_ot_lang_id},
     BabelfontError, Font, MetricType, NameId,
@@ -63,8 +63,12 @@ fn export_localized_name_table_entries(custom_parameters: &mut Vec<CustomParamet
     if !single_style {
         return;
     }
+    // familyNames localizes name ID 1 only when it holds name ID 1; when it holds
+    // the typographic family, both names' localizations need entries
+    let family_names_hold_id1 = family_names_property_id(&font.names) == NameId::FAMILY_NAME;
     for (name_id, names) in font.names.iter() {
-        let in_property = LOCALIZED_PROPERTY_NAME_IDS.contains(&name_id);
+        let in_property = LOCALIZED_PROPERTY_NAME_IDS.contains(&name_id)
+            && (name_id != NameId::FAMILY_NAME || family_names_hold_id1);
         for (language, value) in names.0.iter() {
             if language == DFLT || (in_property && is_layout_language_tag(language)) {
                 continue;
@@ -1065,6 +1069,33 @@ mod localized_name_table_entry_tests {
             .preferred_subfamily_name
             .insert("KOR".to_string(), "Regular".to_string());
         assert_eq!(entries(&font), ["2 3 1 0x0412; Regular"]);
+    }
+
+    #[test]
+    fn test_a_family_that_is_not_the_typographic_family_keeps_its_localizations() {
+        // familyNames holds the typographic family, so the Korean records of both
+        // name ID 1 and name ID 16 are entries
+        let mut font = single_style_font();
+        let names = &mut font.names;
+        names
+            .family_name
+            .set_default("Nanum Gothic ExtraBold".to_string());
+        names
+            .family_name
+            .insert("KOR".to_string(), "\u{B098}\u{B214} ExtraBold".to_string());
+        names
+            .typographic_family
+            .set_default("Nanum Gothic".to_string());
+        names
+            .typographic_family
+            .insert("KOR".to_string(), "\u{B098}\u{B214}".to_string());
+        assert_eq!(
+            entries(&font),
+            [
+                "1 3 1 0x0412; \u{B098}\u{B214} ExtraBold",
+                "16 3 1 0x0412; \u{B098}\u{B214}"
+            ]
+        );
     }
 
     #[test]
